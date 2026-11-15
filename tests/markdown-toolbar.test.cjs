@@ -19,12 +19,11 @@ function load() {
     write: false,
     platform: 'node',
     format: 'cjs',
-    external: ['obsidian', '@codemirror/view'],
+    external: ['obsidian', '@codemirror/view', '@codemirror/state', '@codemirror/commands'],
   });
   const mod = { exports: {} };
   const stubRequire = id => {
     if (id === 'obsidian') return obsidianStub;
-    if (id === '@codemirror/view') return {};
     return require(id);
   };
   new Function('module', 'exports', 'require', result.outputFiles[0].text)(mod, mod.exports, stubRequire);

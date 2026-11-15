@@ -4,10 +4,18 @@
 
 **2.0.0 起，“融合 Mindmap（personal-mindmap）”完整并入本插件；2.1.0 起，“表格工具（excel-tool）”也完整并入。** 批注、正文拖动、Markdown 工具栏、完整思维导图画布（Markdown 一键切换、`.wmind`、`.xmind`）和安卓友好表格工具只需安装一个插件。旧的 `personal-mindmap`、`excel-tool`／`table-tune` 请停用，数据会自动衔接。
 
-- 当前版本：**2.3.0**（Obsidian 1.8.7 或更新版本）
+- 当前版本：**2.4.0**（Obsidian 1.8.7 或更新版本）
 - 支持：Windows、macOS、Linux，以及 Obsidian 手机／平板端
 - 插件 ID：`taube-markdown-tool`，独立于原社区版更新
 - [下载最新版本](https://github.com/w3330442790-sys/taube-markdown-tool/releases/latest)
+
+## 2.4.0 平板工具栏与查找结果栏
+
+- Markdown 顶栏保持单排，普通格式按钮横向滑动；“查找”和“挖孔”固定可见。
+- Markdown 脑图与 `.wmind` 完整画布的“挖孔 / 查找”固定在工具栏起始位置，不再需要拖动长导航栏寻找入口。
+- 查找提供带上下文的结果列表：Markdown 显示行号，脑图显示节点及父节点，点击结果直接定位。
+- 安卓批注侧栏保留常驻搜索，筛选、排序、导出放在可折叠选项内，并缩减卡片间距。
+- 阅读模式可查找完整 Markdown 原文；脑图查找匹配节点文字。真实安卓设备的输入法与触屏手感仍需实机确认。
 
 ## 手机和平板安装：BRAT
 

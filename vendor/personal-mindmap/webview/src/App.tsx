@@ -5,7 +5,7 @@ import { deleteOnly, splitIntoChildren, projectView, setFoldLevel, resizeRange, 
 import { RichEnvironment, registerRichRenderer } from "./RichTopic";
 import { emojiMarkerGroups, hasEmojiMarker, toggleEmojiMarker, type EmojiMarkerGroup } from "../../src/core/emoji-markers";
 import { OpError } from "../../src/core/ops";
-import { getTopic, indexDoc } from "../../src/core/query";
+import { getTopic, indexDoc, subtreeIds } from "../../src/core/query";
 import { markdownLosses, toMarkdown } from "../../src/core/markdown";
 import { clipboardTopics } from '../../src/fusion/clipboard';
 import { convertPrimaryLevelKind } from '../../src/fusion/markdown';
@@ -448,11 +448,15 @@ export function App({ host }: { host: Host }) {
     notify(t("linkHint"));
   };
 
+  const clearFoldOverrides = (ids: Set<string>) => setFolds(old => Object.fromEntries(Object.entries(old).filter(([key]) => !ids.has(key))));
   const toggleFold = (ids: string[]) => {
     const d = docRef.current;
     if (!d || !ids.length) return;
     if(readOnly){setFolds(old=>({...old,...Object.fromEntries(ids.filter(id=>id!==d.root.id).map(id=>[id,!(old[id]??getTopic(d,id)?.collapsed)]))}));return;}
-    commit(ops.toggleCollapsed(d, ids));
+    const foldable = ids.filter(id => getTopic(d, id)?.children?.length);
+    const next = ops.setCollapsed(d, foldable, !foldable.every(id => folds[id] ?? getTopic(d, id)?.collapsed));
+    clearFoldOverrides(new Set(ids));
+    commit(next);
   };
 
   /** 方向键:在该方向上找最近的节点(主方向距离 + 2 倍偏离距离) */
@@ -492,6 +496,7 @@ export function App({ host }: { host: Host }) {
     const d = docRef.current;
     if (!d) return;
     if(readOnly){const changes:Record<string,boolean>={};const visit=(tp:Topic)=>{if(tp.id!==d.root.id&&tp.children?.length)changes[tp.id]=collapsed;tp.children?.forEach(visit);};const tp=getTopic(d,id);if(tp)visit(tp);setFolds(old=>({...old,...changes}));return;}
+    const topic = getTopic(d, id); if (topic) clearFoldOverrides(subtreeIds(topic));
     safe(() => commit(ops.setSubtreeCollapsed(d, id, collapsed)));
   };
 
@@ -499,6 +504,9 @@ export function App({ host }: { host: Host }) {
 
   const openSearch = (mode: SearchMode) => {
     if(studyMode){notify("请先退出背诵模式再查找原文");return;}
+    // On a tablet split, side panels can consume the whole canvas. Give
+    // search and its jump target room without changing saved preferences.
+    if ((rootRef.current?.clientWidth ?? window.innerWidth) < 650) { setPanel(false); setOutlineDock(false); }
     if (editingRef.current) commitEdit();
     if (view !== "map") setView("map");
     setSearch((s) => ({ mode: readOnly ? "find" : mode, n: (s?.n ?? 0) + 1 }));
@@ -513,10 +521,30 @@ export function App({ host }: { host: Host }) {
   const jumpTo = (id: string) => {
     const d = docRef.current;
     if (!d) return;
-    const next = ops.revealTopic(d, id);
-    if (next !== d){if(readOnly){const changes:Record<string,boolean>={};for(const [key,value]of indexDoc(next))if(value.topic.collapsed!==getTopic(d,key)?.collapsed)changes[key]=!!value.topic.collapsed;setFolds(old=>({...old,...changes}));}else commit(next);}
+    const idx = indexDoc(d), ancestors = new Set<string>([id]);
+    const expanded: Record<string, boolean> = {};
+    for (let parent = idx.get(id)?.parent; parent; parent = idx.get(parent.id)?.parent ?? null) {
+      ancestors.add(parent.id); expanded[parent.id] = false;
+    }
+    setFolds(old => ({ ...old, ...expanded }));
+    setHidden(old => new Set([...old].filter(key => !ancestors.has(key))));
+    if ([...ancestors].some(key => idx.get(key)?.topic.hidden)) setShowHidden(true);
+    if (focusId) setFocusId(null);
     setSelection([id]);
-    requestAnimationFrame(() => reveal(id));
+    requestAnimationFrame(() => {
+      const box = sceneRef.current?.layout.nodes.get(id);
+      if (!box) return;
+      const stage = rootRef.current?.querySelector('.wm-stage')?.getBoundingClientRect();
+      const results = rootRef.current?.querySelector('.wm-search')?.getBoundingClientRect();
+      let left = 24, right = size.current.w - 24, top = 24;
+      const bottom = size.current.h - 24;
+      if (stage && results) {
+        if (results.left - stage.left > 220) right = Math.min(right, results.left - stage.left - 16);
+        else if (results.bottom - stage.top < bottom - 100) top = Math.max(top, results.bottom - stage.top + 16);
+      }
+      const k = Math.max(0.2, Math.min(Math.max(vpRef.current.k, 0.8), 1.5, (right - left) / box.w, (bottom - top) / box.h));
+      setViewport({ k, x: (left + right) / 2 - (box.x + box.w / 2) * k, y: (top + bottom) / 2 - (box.y + box.h / 2) * k });
+    });
   };
 
   const replaceIn = (ids: string[], find: string, replacement: string, caseSensitive: boolean) => {
@@ -627,7 +655,7 @@ export function App({ host }: { host: Host }) {
 
   // ---------- 宿主消息 ----------
 
-  const foldToLevel=(level:number|null,fromSelection=false)=>{const d=docRef.current;if(!d)return;const base=(fromSelection?selectedTopics()[0]:undefined)??focusId??d.root.id;safe(()=>{const next=setFoldLevel(d,level,base);if(readOnly){const changes:Record<string,boolean>={};const visit=(tp:Topic)=>{changes[tp.id]=!!tp.collapsed;tp.children?.forEach(visit);};const from=getTopic(next,base);if(from)visit(from);setFolds(old=>({...old,...changes}));}else commit(next);});requestAnimationFrame(()=>requestAnimationFrame(fit));};
+  const foldToLevel=(level:number|null,fromSelection=false)=>{const d=docRef.current;if(!d)return;const base=(fromSelection?selectedTopics()[0]:undefined)??focusId??d.root.id;safe(()=>{const next=setFoldLevel(d,level,base);if(readOnly){const changes:Record<string,boolean>={};const visit=(tp:Topic)=>{changes[tp.id]=!!tp.collapsed;tp.children?.forEach(visit);};const from=getTopic(next,base);if(from)visit(from);setFolds(old=>({...old,...changes}));}else{const topic=getTopic(d,base);if(topic)clearFoldOverrides(subtreeIds(topic));commit(next);}});requestAnimationFrame(()=>requestAnimationFrame(fit));};
   const runCommand = (c: HostCommand) => {
     if(c==='flush'){const active=document.activeElement;if(active&&rootRef.current?.contains(active)&&active!==captureRef.current)(active as HTMLElement).blur();if(editingRef.current)commitEdit();return;}
     if(c==='syncPending'){
@@ -672,7 +700,7 @@ export function App({ host }: { host: Host }) {
     if(c==="exportSvg")return void exportAs("svg");
     if(c==="copyImage")return void exportAs("png",true);
     if(c==="fold")return toggleFold(selectedTopics());
-    if(c==="expandAll"||c==="collapseAll"){const d=docRef.current;if(d){if(readOnly)setSubtreeFold(d.root.id,c==="collapseAll");else commit(ops.setAllCollapsed(d,c==="collapseAll"));}return;}
+    if(c==="expandAll"||c==="collapseAll"){const d=docRef.current;if(d){if(readOnly)setSubtreeFold(d.root.id,c==="collapseAll");else{setFolds({});commit(ops.setAllCollapsed(d,c==="collapseAll"));}}return;}
     if (c === "undo") undo();
     else if (c === "redo") redo();
     else if (c === "zoomIn") zoom(1.2);

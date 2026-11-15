@@ -1,6 +1,7 @@
 import { Editor, MarkdownView, Notice, setIcon } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { isClozeHidden, toggleCloze } from './cloze';
+import { createDocumentSearch } from './document-search';
 
 export type MarkdownFormatCommand =
     | 'bold' | 'italic' | 'strikethrough' | 'highlight' | 'inline-code'
@@ -573,13 +574,24 @@ function syncClozeButton(button: HTMLButtonElement, view: MarkdownView): void {
     button.classList.toggle('is-active', hidden);
     button.setAttribute('aria-label', label);
     button.title = label;
+    button.replaceChildren();
     setIcon(button, hidden ? 'eye' : 'eye-off');
+    const text = createSpan();
+    text.textContent = '挖孔'; button.append(text);
+    button.setAttribute('aria-pressed', String(hidden));
 }
 
 /** Keep toolbar buttons in sync when the command palette toggles cloze. */
 export function refreshClozeToolbar(view: MarkdownView): void {
     view.containerEl.querySelectorAll<HTMLButtonElement>('.mt-md-toolbar-btn[data-command="cloze-toggle"]')
         .forEach(button => syncClozeButton(button, view));
+}
+
+/** Open the same result list from the toolbar, a hotkey or command palette. */
+export function openMarkdownSearch(view: MarkdownView): boolean {
+    const button = view.containerEl.querySelector<HTMLButtonElement>('.mt-md-toolbar-btn[data-command="find-replace"]');
+    if (!button) return false;
+    button.click(); return true;
 }
 
 /** Mount the fixed Markdown toolbar as the first child of the view content area. */
@@ -592,6 +604,10 @@ export function mountMarkdownToolbar(
     const toolbar = createDiv('mt-md-toolbar');
     toolbar.setAttribute('role', 'toolbar');
     toolbar.setAttribute('aria-label', 'Markdown 工具栏');
+    toolbar.setAttribute('data-ignore-swipe', 'true');
+    const primary = createDiv('mt-md-toolbar-primary');
+    const scroll = createDiv('mt-md-toolbar-scroll');
+    toolbar.append(primary, scroll);
     const notify = options.onNotice ?? ((message: string) => { new Notice(message); });
 
     let currentGroup: ToolbarEntry['group'] | null = null;
@@ -600,7 +616,7 @@ export function mountMarkdownToolbar(
             if (currentGroup !== null) {
                 const separator = createSpan('mt-md-toolbar-sep');
                 separator.setAttribute('aria-hidden', 'true');
-                toolbar.appendChild(separator);
+                scroll.appendChild(separator);
             }
             currentGroup = entry.group;
         }
@@ -616,9 +632,16 @@ export function mountMarkdownToolbar(
             const icon = TOOLBAR_ICONS[entry.command];
             if (icon) setIcon(button, icon);
         }
-        toolbar.appendChild(button);
+        if (entry.command === 'cloze-toggle' || entry.command === 'find-replace') {
+            primary.appendChild(button);
+            if (entry.command === 'find-replace') {
+                const text = createSpan(); text.textContent = '查找'; button.append(text);
+                button.setAttribute('aria-expanded', 'false');
+            }
+        } else scroll.appendChild(button);
         if (entry.command === 'cloze-toggle') syncClozeButton(button, view);
     }
+    const search = createDocumentSearch(view, toolbar, primary.querySelector<HTMLButtonElement>('[data-command="find-replace"]')!);
 
     const onMouseDown = (event: MouseEvent): void => {
         const target = event.target;
@@ -631,14 +654,23 @@ export function mountMarkdownToolbar(
         if (!(button instanceof HTMLButtonElement)) return;
         const command = button.getAttribute('data-command') as MarkdownCommand | null;
         if (!command) return;
+        if (command === 'find-replace') { search.open(); return; }
         runMarkdownToolbarCommand(view, command, notify);
         if (command === 'cloze-toggle') syncClozeButton(button, view);
     };
     toolbar.addEventListener('mousedown', onMouseDown);
     toolbar.addEventListener('click', onClick);
+    const onKeyDown = (event: KeyboardEvent) => {
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f') {
+            event.preventDefault(); event.stopPropagation(); search.open();
+        }
+    };
+    view.containerEl.addEventListener('keydown', onKeyDown, true);
     container.insertBefore(toolbar, container.firstChild);
 
     return () => {
+        search.dispose();
+        view.containerEl.removeEventListener('keydown', onKeyDown, true);
         toolbar.removeEventListener('mousedown', onMouseDown);
         toolbar.removeEventListener('click', onClick);
         toolbar.remove();

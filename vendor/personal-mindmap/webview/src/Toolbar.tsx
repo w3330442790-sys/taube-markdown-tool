@@ -12,7 +12,7 @@ import { LookSwitch, StructureIcon, ThemeSwatch } from "./FormatPanel";
 
 function Btn({ icon, label, onClick, disabled, active, title }: { icon: ReactNode; label?: string; onClick: () => void; disabled?: boolean; active?: boolean; title?: string }) {
   return (
-    <button className={"wm-tb-btn" + (active ? " wm-active" : "")} onClick={onClick} disabled={disabled} title={title ?? label}>
+    <button className={"wm-tb-btn" + (active ? " wm-active" : "")} onClick={onClick} disabled={disabled} title={title ?? label} aria-label={label ?? title} aria-pressed={active}>
       {icon}
       {label && <span>{label}</span>}
     </button>
@@ -63,6 +63,11 @@ export function Toolbar({ position, actions: a, view, setView, panel, togglePane
   const st = rootStructure(a.doc);
   const theme = docTheme(a.doc);
   return (
+    <div className="wm-toolbar-shell" data-position={position ?? 'top'}>
+      <div className="wm-toolbar-primary" role="toolbar" aria-label="脑图常用工具">
+        <Btn icon={<Icon.eye />} label="挖孔" onClick={() => a.feature("cloze")} active={a.clozeMode} title={a.clozeMode ? "显示挖孔内容" : "隐藏挖孔内容"} />
+        <Btn icon={<Icon.search />} label="查找" onClick={openSearch} title="查找" />
+      </div>
     <div data-position={position} className={"wm-toolbar"+(position==="left"||position==="right"?" wm-toolbar-vertical":"")}>
       <style>{`.wm-toolbar-vertical{flex-direction:column;align-items:stretch;width:150px;overflow-y:auto;overflow-x:hidden;border-right:1px solid var(--wm-border)}.wm-toolbar-vertical .wm-tb-group{flex-direction:column;align-items:stretch}.wm-toolbar-vertical .wm-tb-sep{height:1px;width:100%;margin:4px 0}.wm-toolbar-vertical .wm-tb-spacer{flex:0}.wm-toolbar-vertical .wm-tb-btn{justify-content:flex-start;width:100%}.wm-toolbar-vertical .wm-popover{margin-left:140px;transform:none}.wm-toolbar-vertical[data-position="right"] .wm-popover{margin-left:-280px}`}</style>
       <div className="wm-tb-group">
@@ -101,8 +106,6 @@ export function Toolbar({ position, actions: a, view, setView, panel, togglePane
       </Menu>
       <div className="wm-tb-spacer" />
       <div className="wm-tb-group">
-        <Btn icon={<Icon.eye />} label="挖孔" onClick={() => a.feature("cloze")} active={a.clozeMode} title={a.clozeMode ? "显示挖孔内容" : "隐藏挖孔内容"} />
-        <Btn icon={<Icon.search />} onClick={openSearch} disabled={view !== "map"} title={`${t("find")} (${isMac ? "⌘F" : "Ctrl+F"})`} />
         <Btn icon={<Icon.laser />} label={t("laserShort")} onClick={toggleLaser} active={laser} disabled={view !== "map"} title={t("laser")} />
       </div>
       <div className="wm-tb-sep" />
@@ -191,6 +194,7 @@ export function Toolbar({ position, actions: a, view, setView, panel, togglePane
         </div>
         <Btn icon={<Icon.panel />} onClick={togglePanel} active={panel} title={t("format")} />
       </div>
+    </div>
     </div>
   );
 }

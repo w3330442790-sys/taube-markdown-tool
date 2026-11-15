@@ -23,6 +23,22 @@ const server = http.createServer((req, res) => {
   const reset = async (mobile = false) => { await page.evaluate(mobile => { window.failWrite = false; localStorage.clear(); return window.setup(mobile); }, mobile); await page.locator('.sidenote-comment-item').first().waitFor(); };
   try {
     await page.goto(`http://127.0.0.1:${server.address().port}`); await page.waitForFunction(() => window.setup); await reset();
+    await check('Android annotation header keeps search visible while secondary tools are collapsed', async () => {
+      await reset(true);
+      await page.evaluate(() => { window.view.containerEl.style.width = '320px'; });
+      assert.equal(await page.getByLabel('搜索批注', {exact:true}).isVisible(), true);
+      assert.equal(await page.getByLabel('导出为 Markdown', {exact:true}).isVisible(), false);
+      const header=await page.locator('.sidenote-options-header').boundingBox();assert.ok(header.height<=48);
+      const navigation=await page.locator('.sidenote-navigation').boundingBox();assert.ok(navigation.height<=48);
+      await page.getByLabel('搜索批注', {exact:true}).fill('not-found');
+      await page.waitForFunction(()=>document.querySelectorAll('.sidenote-comment-item').length===0);
+      await page.getByLabel('搜索批注', {exact:true}).fill('');
+      await page.locator('.sidenote-comment-item').first().waitFor();
+      await page.locator('.sidenote-view-container').screenshot({path:path.join(root,'artifacts/android-annotations-compact.png')});
+      await page.getByRole('button',{name:'展开选项',exact:true}).click();
+      assert.equal(await page.getByLabel('导出为 Markdown', {exact:true}).isVisible(), true);
+      await reset();
+    });
     await check('one-click mobile options free list space and persist without changing filters', async () => {
       await reset(true);
       await page.evaluate(() => { window.view.containerEl.style.height = '850px'; });

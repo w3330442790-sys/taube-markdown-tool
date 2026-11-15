@@ -17,7 +17,7 @@ import { markPresentation } from './selection-tools';
 import { migrateLegacyData } from './legacy-data';
 import { BlockIndex, mapPlanRange, planBlockMove, type MovePlan } from './block-drag';
 import { blockDragExtension, blockMoveEffect, dispatchBlockMove } from './drag-handles';
-import { MARKDOWN_TOOLBAR_COMMANDS, applyMarkdownCommand, mountMarkdownToolbar, refreshClozeToolbar } from './markdown-toolbar';
+import { MARKDOWN_TOOLBAR_COMMANDS, applyMarkdownCommand, mountMarkdownToolbar, refreshClozeToolbar, openMarkdownSearch } from './markdown-toolbar';
 import { createClozeExtension, toggleCloze } from './cloze';
 
 // --- Helper Functions ---
@@ -344,9 +344,10 @@ class SideNoteView extends ItemView {
         // Toolbar
         const toolbar = options.createDiv("sidenote-toolbar");
         
-        const searchInput = toolbar.createEl("input", {
+        const searchInput = optionsHeader.createEl("input", {
             type: "text",
-            placeholder: "搜索批注…"
+            placeholder: "搜索批注…",
+            cls: 'sidenote-header-search'
         });
         searchInput.setAttribute('aria-label', '搜索批注');
         searchInput.value = this.searchQuery;
@@ -3443,8 +3444,8 @@ export default class SideNote extends MindmapPluginBase {
             icon: 'search',
             checkCallback: checking => {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (!view || view.getMode() !== 'source') return false;
-                if (!checking) view.showSearch(true);
+                if (!view || (!view.containerEl.querySelector('.mt-md-toolbar') && view.getMode() !== 'source')) return false;
+                if (!checking && !openMarkdownSearch(view)) view.showSearch(true);
                 return true;
             },
         });

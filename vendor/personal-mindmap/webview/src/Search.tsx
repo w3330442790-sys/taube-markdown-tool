@@ -1,7 +1,7 @@
 // 查找 / 替换条:停在画布右上角,只匹配主题文字
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MindDoc } from "../../src/core/types";
-import { findText } from "../../src/core/query";
+import { findText, getTopic, indexDoc } from "../../src/core/query";
 import { Icon } from "./icons";
 import { t } from "./i18n";
 
@@ -31,6 +31,7 @@ export function SearchBar({ doc, readOnly, mode, focusN, setMode, onClose, onJum
   const replaceRef = useRef<HTMLInputElement>(null);
 
   const matches = useMemo(() => findText(doc, query, caseSensitive), [doc, query, caseSensitive]);
+  const [limit, setLimit] = useState(100);
   const cur = matches.length ? Math.min(index, matches.length - 1) : -1;
   const curId = cur >= 0 ? matches[cur] : null;
 
@@ -45,12 +46,15 @@ export function SearchBar({ doc, readOnly, mode, focusN, setMode, onClose, onJum
 
   // 改了查找条件就从第一个匹配开始;打字时稍等再跳,免得中间态把无关的折叠分支展开
   const typing = useRef(0);
+  const composing = useRef(false);
   useEffect(() => () => window.clearTimeout(typing.current), []);
   const change = (q: string, cs: boolean) => {
     setQuery(q);
     setCaseSensitive(cs);
     setIndex(0);
+    setLimit(100);
     window.clearTimeout(typing.current);
+    if (composing.current) return;
     typing.current = window.setTimeout(() => {
       const first = findText(doc, q, cs)[0];
       if (first) onJump(first);
@@ -111,19 +115,19 @@ export function SearchBar({ doc, readOnly, mode, focusN, setMode, onClose, onJum
   const count = !query ? "" : matches.length ? `${cur + 1}/${matches.length}` : t("noMatch");
 
   return (
-    <div className="wm-search" onPointerDown={(e) => e.stopPropagation()}>
+    <div className="wm-search" aria-label="脑图查找结果" onPointerDown={(e) => e.stopPropagation()}>
       <button className={"wm-search-toggle" + (showReplace ? " wm-open" : "")} onClick={() => setMode(showReplace ? "find" : "replace")} disabled={readOnly} title={t("toggleReplace")}>
         <Icon.right />
       </button>
       <div className="wm-search-rows">
         <div className="wm-search-row">
           <div className="wm-search-input">
-            <input ref={findRef} value={query} placeholder={t("findPlaceholder")} spellCheck={false} onChange={(e) => change(e.target.value, caseSensitive)} onKeyDown={(e) => keys(e, "find")} />
+            <input ref={findRef} aria-label="查找脑图节点" value={query} placeholder={t("findPlaceholder")} spellCheck={false} onChange={(e) => change(e.target.value, caseSensitive)} onCompositionStart={() => { composing.current = true; window.clearTimeout(typing.current); }} onCompositionEnd={(e) => { composing.current = false; change(e.currentTarget.value, caseSensitive); }} onKeyDown={(e) => keys(e, "find")} />
             <button className={"wm-search-case" + (caseSensitive ? " wm-active" : "")} onClick={() => change(query, !caseSensitive)} title={t("matchCase")}>
               Aa
             </button>
           </div>
-          <span className={"wm-search-count" + (query && !matches.length ? " wm-none" : "")}>{count}</span>
+          <span aria-live="polite" className={"wm-search-count" + (query && !matches.length ? " wm-none" : "")}>{count}</span>
           <button className="wm-search-btn" onClick={() => step(-1)} disabled={!matches.length} title={t("prevMatch")}>
             <Icon.up />
           </button>
@@ -147,6 +151,19 @@ export function SearchBar({ doc, readOnly, mode, focusN, setMode, onClose, onJum
             </button>
           </div>
         )}
+        {!!query && <div className="wm-search-results" aria-label="节点定位列表">
+          {matches.slice(0, limit).map((id, i) => {
+            const entry = indexDoc(doc).get(id);
+            return <button key={id} data-topic-id={id} className={'wm-search-result' + (id === curId ? ' wm-current' : '')} aria-current={id === curId} onClick={() => {
+              window.clearTimeout(typing.current); setIndex(i); onJump(id);
+            }}>
+              <small>{i + 1} · {entry?.parent?.text ?? '中心主题'}</small>
+              <span>{getTopic(doc, id)?.text}</span>
+            </button>;
+          })}
+          {!matches.length && <div className="wm-search-empty">{t('noMatch')}</div>}
+          {matches.length > limit && <button className="wm-search-result" onClick={() => setLimit(n => n + 100)}>显示更多（共 {matches.length} 个节点）</button>}
+        </div>}
       </div>
     </div>
   );

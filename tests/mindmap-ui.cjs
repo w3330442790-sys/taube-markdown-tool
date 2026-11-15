@@ -28,10 +28,35 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
  page.on('pageerror',e=>errors.push(e.message));
  await page.addInitScript(fixture=>{
    window.__testDoc=fixture;window.__testMessages=[];
-   window.__testHost={post(m){window.__testMessages.push(m);if(m.type==='ready')setTimeout(()=>window.postMessage({type:'init',text:JSON.stringify(window.__testDoc),lang:'zh-CN',fileName:'测试脑图',host:'obsidian'},'*'),0);else if(m.type==='edit')window.__testDoc=JSON.parse(m.text);},onViewState(state){window.__testViewState=state;},subscribe(handler){const listener=event=>handler(event.data);window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},listLinkTargets(query){return ['测试笔记','参考资料','临床复习'].filter(name=>name.includes(query));},saveBinary:async(name)=>'attachments/'+name,editNote(text,onCommit,readOnly){window.__noteReadOnly=readOnly;if(!readOnly)onCommit('**弹窗编辑的备注**');},pickNote:async()=>'参考资料'};
+   window.__testHost={editorSettings:{toolbarPosition:new URLSearchParams(location.search).get('toolbar')||'top'},post(m){window.__testMessages.push(m);if(m.type==='ready')setTimeout(()=>window.postMessage({type:'init',text:JSON.stringify(window.__testDoc),lang:'zh-CN',fileName:'测试脑图',host:'obsidian'},'*'),0);else if(m.type==='edit')window.__testDoc=JSON.parse(m.text);},onViewState(state){window.__testViewState=state;},subscribe(handler){const listener=event=>handler(event.data);window.addEventListener('message',listener);return()=>window.removeEventListener('message',listener);},listLinkTargets(query){return ['测试笔记','参考资料','临床复习'].filter(name=>name.includes(query));},saveBinary:async(name)=>'attachments/'+name,editNote(text,onCommit,readOnly){window.__noteReadOnly=readOnly;if(!readOnly)onCommit('**弹窗编辑的备注**');},pickNote:async()=>'参考资料'};
  },fixture);
  await page.goto(`http://127.0.0.1:${server.address().port}/`);
  await page.locator('[data-id="root"]').first().waitFor();
+ await check('tablet primary search and cloze stay visible without dragging the long toolbar',async()=>{
+   await page.setViewportSize({width:768,height:1024});
+   for(let n=0;n<7;n++)await command(page,'zoomOut');
+   await command(page,'collapseAll');
+   const sourceBeforeSearch=await page.evaluate(()=>JSON.stringify(window.__testDoc));
+   for(const label of ['查找','隐藏挖孔内容']){
+     const button=page.locator('.wm-toolbar-primary').getByTitle(label,{exact:true});
+     assert.equal(await button.count(),1);const b=await button.boundingBox();assert.ok(b.x>=0&&b.x+b.width<=768&&b.height>=40);
+   }
+   await page.locator('.wm-toolbar').evaluate(el=>el.scrollLeft=el.scrollWidth);
+   await page.locator('.wm-toolbar-primary').getByRole('button',{name:'查找',exact:true}).tap();
+   await page.getByLabel('查找脑图节点').fill('答案');
+   await page.locator('.wm-search-result').nth(1).waitFor();
+   const result=page.locator('.wm-search-result').last();const id=await result.getAttribute('data-topic-id');await result.tap();
+   await page.waitForFunction(id=>window.__testViewState.selection.includes(id),id);
+   await page.waitForFunction(()=>window.__testViewState.viewport.k>=0.8);
+   assert.equal(await page.evaluate(()=>JSON.stringify(window.__testDoc)),sourceBeforeSearch,'search expansion must not write the document');
+   assert.ok((await page.locator('.wm-search').boundingBox()).width<=752);
+   await page.getByTitle('关闭 (Esc)',{exact:true}).click();
+   await command(page,'collapseAll');
+   assert.equal(await page.locator('.wm-topic[data-id="high"]').count(),0,'explicit folding must override temporary search expansion');
+   await page.locator('.wm-toolbar').evaluate(el=>el.scrollLeft=0);
+   await page.setViewportSize({width:1450,height:980});await command(page,'fit');
+   await command(page,'expandAll');
+ });
  await check('loads original primary canvas and rich nodes',async()=>{const count=node=>1+(node.children??[]).reduce((sum,c)=>sum+count(c),0);assert.equal(await page.locator('.wm-topic[data-kind="topic"]').count(),count(fixture.root));assert.ok(await page.locator('strong').count());assert.equal(await page.locator('.wm-rich-topic img').count(),1);});
  const touchSession=await page.context().newCDPSession(page);
  async function swipe(x,y,dx,dy=0){
@@ -73,7 +98,7 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await command(page,'toggleLock');await page.setViewportSize({width:1450,height:980});await command(page,'fit');
  });
  await check('cloze button masks highlights in the primary canvas',async()=>{
-   const tb=page.locator('.wm-toolbar');
+   const tb=page.locator('.wm-toolbar-shell');
    const cloze=tb.getByRole('button',{name:'挖孔',exact:true});
    assert.equal(await cloze.count(),1);
    await cloze.click();
@@ -235,6 +260,22 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
   assert.equal(await page.locator('.wm-relation-label,[data-kind="rel"] text').filter({hasText:'促进'}).count(),1);
  });
  await page.screenshot({path:path.resolve(__dirname,'../artifacts/primary-canvas.png'),fullPage:true});
+ await check('primary tools remain reachable in every toolbar position and narrow tablet splits',async()=>{
+   for(const position of ['top','bottom','left','right']){
+     await page.setViewportSize({width:390,height:844});
+     await page.goto(`http://127.0.0.1:${server.address().port}/?toolbar=${position}`);
+     await page.locator('.wm-toolbar-primary').waitFor();
+     const bounds=await page.locator('.wm-toolbar-shell').boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=391);
+     await page.locator('.wm-toolbar-primary').getByRole('button',{name:'查找',exact:true}).tap();
+     await page.getByLabel('查找脑图节点').fill('答案');
+     await page.locator('.wm-search-result').first().waitFor();
+     const search=await page.locator('.wm-search').boundingBox();assert.ok(search.x>=0&&search.x+search.width<=390,JSON.stringify({position,search,root:await page.locator(".wm-root").boundingBox(),canvas:await page.locator(".wm-canvas").boundingBox()}));
+     if(position==='top'){
+       await page.setViewportSize({width:768,height:1024});
+       await page.screenshot({path:path.resolve(__dirname,'../artifacts/tablet-mindmap-search.png'),fullPage:false});
+     }
+   }
+ });
  assert.deepEqual(errors,[]);
  fs.writeFileSync(path.resolve(__dirname,'../artifacts/ui-results.json'),JSON.stringify({results,errors},null,2));
  }finally{await browser.close();}
