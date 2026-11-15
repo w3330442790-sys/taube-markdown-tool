@@ -103,6 +103,8 @@ export class CommentManager {
         this.comments.forEach(comment => {
             if (comment.filePath === oldPath) {
                 comment.filePath = newPath;
+            } else if (oldPath && comment.filePath.startsWith(oldPath + '/')) {
+                comment.filePath = newPath + comment.filePath.slice(oldPath.length);
             }
         });
     }
@@ -196,6 +198,29 @@ export class CommentManager {
                 continue;
             }
 
+            const formattingMatches = this.findWhitespaceMatches(fileContent, selectedText);
+            if (formattingMatches.length > 1) {
+                comment.isOrphaned = true;
+                continue;
+            }
+
+            // Global uniqueness is sufficient evidence even after a move outside
+            // the former heading or far beyond the former coordinates.
+            if (exactMatches.length === 1) {
+                this.applyMatch(comment, fileContent, exactMatches[0], selectedText);
+                continue;
+            }
+
+            // Formatting changes may alter only whitespace (including CRLF and
+            // Unicode spaces). Keep literal characters and word boundaries, and
+            // require a globally unique match; never rank duplicates by distance.
+            if (formattingMatches.length > 0) {
+                const match = formattingMatches[0];
+                this.applyMatch(comment, fileContent, match.index, match.text);
+                comment.selectedTextHash = await generateHash(match.text);
+                continue;
+            }
+
             // 策略 1：绝对 offset 仍有效时，直接使用。
             if (this.isOffsetMatch(fileContent, comment)) {
                 this.applyMatch(comment, fileContent, comment.absoluteFrom!, selectedText);
@@ -233,6 +258,21 @@ export class CommentManager {
                 comment.isOrphaned = true;
             }
         }
+    }
+
+    private findWhitespaceMatches(content: string, text: string): Array<{ index: number; text: string }> {
+        if (!text.trim() || !/\s/u.test(text)) return [];
+        const pattern = text.split(/(\s+)/u)
+            .map(part => /^\s+$/u.test(part) ? '\\s+' : this.escapeRegExp(part)).join('');
+        // Lookahead retains overlapping occurrences so uniqueness cannot be
+        // inferred merely because a previous match consumed the next one.
+        const regex = new RegExp(`(?=(${pattern}))`, 'gu');
+        const matches: Array<{ index: number; text: string }> = [];
+        for (const match of content.matchAll(regex)) {
+            matches.push({ index: match.index, text: match[1] });
+            if (matches.length === 2) break;
+        }
+        return matches;
     }
 
     /**

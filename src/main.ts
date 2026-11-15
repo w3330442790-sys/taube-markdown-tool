@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, TFile, App, MarkdownView, Notice, ViewStateResult, Setting, PluginSettingTab, MarkdownRenderer, setIcon, Component, normalizePath, Platform, Editor } from "obsidian";
+import { ItemView, WorkspaceLeaf, TFile, TFolder, App, MarkdownView, Notice, ViewStateResult, Setting, PluginSettingTab, MarkdownRenderer, setIcon, Component, normalizePath, Platform, Editor } from "obsidian";
 import { Comment, CommentManager } from "./commentManager";
 import MindmapPluginBase from "../vendor/personal-mindmap/src/obsidian/main";
 import { registerMindmapBridges } from './mindmap-bridge';
@@ -19,11 +19,17 @@ import { BlockIndex, mapPlanRange, planBlockMove, type MovePlan } from './block-
 import { blockDragExtension, blockMoveEffect, dispatchBlockMove } from './drag-handles';
 import { MARKDOWN_TOOLBAR_COMMANDS, applyMarkdownCommand, mountMarkdownToolbar, refreshClozeToolbar, openMarkdownSearch } from './markdown-toolbar';
 import { createClozeExtension, toggleCloze } from './cloze';
+import { commentStorageBasename } from './comment-storage';
+import { commitCommentFiles, recoverCommentFiles, CommentStorageCommitError } from './comment-storage-io';
 
 // --- Helper Functions ---
 
 const forceUpdateEffect = StateEffect.define<null>();
 type CommentMarkType = NonNullable<Comment['markType']>;
+class CommentConflictError extends Error {}
+function commentEditVersion(comment: Comment): string {
+    return JSON.stringify([comment.filePath, comment.selectedText, comment.comment, comment.color ?? null, comment.markType ?? null]);
+}
 
 interface CustomViewState extends Record<string, unknown> {
     filePath: string | null;
@@ -618,7 +624,6 @@ class SideNoteView extends ItemView {
                 if (generation !== this.renderGeneration || !this.containerEl.contains(container)) return;
                 this.setupExpandableText(selectedTextEl);
                 textInfoEl.createEl("small", { text: new Date(comment.timestamp).toLocaleString(), cls: "sidenote-timestamp" });
-                if (comment.isOrphaned) textInfoEl.createEl('strong', { text: '定位异常 · 可重新绑定', cls: 'sidenote-orphan-label' });
 
                 const actionsEl = headerEl.createDiv("sidenote-comment-actions");
                 const markOption = getMarkTypeOption(comment.markType);
@@ -626,6 +631,12 @@ class SideNoteView extends ItemView {
                 markBadge.title = `标记样式：${markOption.label}`;
                 markBadge.setAttribute("aria-label", `标记样式：${markOption.label}`);
                 setIcon(markBadge, markOption.icon);
+                if (comment.isOrphaned) {
+                    markBadge.addClass('sidenote-orphan-indicator');
+                    const label = `定位异常，可在更多操作中重新绑定；标记样式：${markOption.label}`;
+                    markBadge.title = label; markBadge.setAttribute('aria-label', label);
+                    setIcon(markBadge, 'unlink');
+                }
                 
                 const jumpToComment = async () => {
                     this.activeCommentTimestamp = comment.timestamp;
@@ -701,7 +712,8 @@ class SideNoteView extends ItemView {
                 deleteOption.onclick = async (e) => {
                     e.stopPropagation();
                     this.closeActionMenu();
-                    await this.plugin.deleteComment(comment.timestamp);
+                    try { await this.plugin.deleteComment(comment.timestamp, comment.filePath); }
+                    catch { new Notice('删除保存失败，批注已保留，请重试'); }
                 };
 
                 menuButton.onclick = (e) => {
@@ -770,8 +782,12 @@ class SideNoteView extends ItemView {
             await this.plugin.saveCommentsForSingleFile(comment.filePath);
 
             const updatedComment = this.plugin.comments.find(c => c.timestamp === comment.timestamp);
-            if (!updatedComment || updatedComment.isOrphaned) {
-                new Notice("在正文中找不到这条批注的原文。");
+            if (!updatedComment) {
+                new Notice('这条批注已不存在。');
+                return;
+            }
+            if (updatedComment.isOrphaned) {
+                this.plugin.showOrphanNotice([updatedComment]);
                 return;
             }
 
@@ -815,6 +831,7 @@ async function switchToSideNoteView(app: App) {
 // --- Comment Modal (Floating Popover — no Obsidian Modal backdrop) ---
 
 class CommentModal {
+    private editBaseline: string | undefined;
     private static activeModal: CommentModal | null = null;
 
     static closeActive() {
@@ -876,6 +893,7 @@ class CommentModal {
             this.colorInput = this.comment.color || plugin.toolSettings.highlightColor || "#FFC800";
             this.markType = this.comment.markType || "highlight";
             this.commentText = this.comment.comment || "";
+            this.editBaseline = options.restoredDraft?.baseVersion ?? commentEditVersion(this.comment);
         } else {
             this.comment = null;
             this.selectedText = options.selectedText || "";
@@ -897,6 +915,7 @@ class CommentModal {
     private valueSignature() { return JSON.stringify([this.commentText, this.colorInput.toLowerCase(), this.markType]); }
     private applyDraft(draft: Draft) {
         this.commentText = draft.commentText; this.colorInput = draft.color; this.markType = draft.markType;
+        if (draft.baseVersion !== undefined) this.editBaseline = draft.baseVersion;
         // Keep the original key if the source moved while this draft was closed.
         this.draftIdentity = draft.key;
     }
@@ -914,6 +933,7 @@ class CommentModal {
         try {
             this.plugin.drafts.put({ key: this.draftIdentity, filePath: this.filePath, selectedText: this.selectedText,
                 from: this.anchorFrom, to: this.anchorTo, timestamp: this.comment?.timestamp, commentText: this.commentText,
+                baseVersion: this.editBaseline,
                 color: this.colorInput, markType: this.markType, updatedAt: Date.now() });
             this.wroteDraft = true;
             this.statusEl?.setText('草稿已暂存 · 批注未保存');
@@ -1120,7 +1140,8 @@ class CommentModal {
             setIcon(deleteBtn, 'trash-2');
             deleteBtn.onclick = async () => {
                 if (this.comment) {
-                    await this.plugin.deleteComment(this.comment.timestamp);
+                    try { await this.plugin.deleteComment(this.comment.timestamp, this.comment.filePath); }
+                    catch { new Notice('删除保存失败，批注已保留，请重试'); return; }
                     this.savedSuccessfully = true;
                     try { this.plugin.drafts.remove(this.draftIdentity); } catch { /* Keep the draft on storage errors. */ }
                     this.close();
@@ -1250,7 +1271,7 @@ class CommentModal {
         this.floatingEl?.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement>('input, button, textarea').forEach(el => el.disabled = true);
         try {
             if (this.mode === 'edit' && this.comment) {
-                await this.plugin.editComment(this.comment.timestamp, this.commentText, this.colorInput, this.markType);
+                await this.plugin.editComment(this.comment.timestamp, this.commentText, this.colorInput, this.markType, '批注已更新', this.editBaseline);
             } else if (this.mode === 'add' && this.onSubmitAdd) {
                 await this.onSubmitAdd(this.commentText, this.colorInput, this.markType);
             } else {
@@ -1265,9 +1286,9 @@ class CommentModal {
             this.close();
         } catch (error) {
             console.error('[SideNote] 保存批注失败', error);
-            new Notice('保存批注失败，请重试');
+            new Notice(error instanceof CommentConflictError ? error.message : '保存批注失败，请重试');
             this.isSubmitting = false;
-            this.statusEl?.setText('保存失败 · 草稿保留，请重试');
+            this.statusEl?.setText(error instanceof CommentConflictError ? `保存失败 · ${error.message}` : '保存失败 · 草稿保留，请重试');
             this.floatingEl?.querySelectorAll<HTMLInputElement | HTMLButtonElement | HTMLTextAreaElement>('input, button, textarea').forEach(el => el.disabled = false);
             if (submitButton) submitButton.disabled = false;
         }
@@ -1517,10 +1538,8 @@ class SideNoteSettingTab extends PluginSettingTab {
                     .setWarning()
                     .setDisabled(orphanedCount === 0)
                     .onClick(async () => {
-                        const deleted = this.plugin.commentManager.deleteOrphanedComments();
-                        await this.plugin.saveToolData();
-                        this.plugin.refreshViews();
-                        new Notice(`已删除 ${deleted} 条孤立批注`);
+                        try { const deleted = await this.plugin.deleteOrphanedComments(); new Notice(`已删除 ${deleted} 条孤立批注`); }
+                        catch { new Notice('删除保存失败，批注已保留，请重试'); }
                         (this as unknown as PluginSettingTab & { update(): void }).update();
                     }))
             }
@@ -1613,10 +1632,8 @@ class SideNoteSettingTab extends PluginSettingTab {
             }).setDisabled(orphanedCount === 0));
         new Setting(containerEl).addButton((button) =>
                 button.setButtonText(`删除 ${orphanedCount} 条孤立批注`).setWarning().onClick(async () => {
-                    const deleted = this.plugin.commentManager.deleteOrphanedComments();
-                    await this.plugin.saveToolData();
-                    this.plugin.refreshViews();
-                    new Notice(`已删除 ${deleted} 条孤立批注`);
+                    try { const deleted = await this.plugin.deleteOrphanedComments(); new Notice(`已删除 ${deleted} 条孤立批注`); }
+                    catch { new Notice('删除保存失败，批注已保留，请重试'); }
                     this.display();
                 }).setDisabled(orphanedCount === 0));
     }
@@ -1635,15 +1652,15 @@ export default class SideNote extends MindmapPluginBase {
     private writeQueue: Promise<void> = Promise.resolve();
     private mutationQueue: Promise<void> = Promise.resolve();
 
-    private enqueueWrite(task: () => Promise<void>): Promise<void> {
+    private enqueueWrite<T>(task: () => Promise<T>): Promise<T> {
         const result = this.writeQueue.then(task);
-        this.writeQueue = result.catch(() => {});
+        this.writeQueue = result.then(() => undefined, () => undefined);
         return result;
     }
 
-    private enqueueMutation(task: () => Promise<void>): Promise<void> {
+    private enqueueMutation<T>(task: () => Promise<T>): Promise<T> {
         const result = this.mutationQueue.then(task);
-        this.mutationQueue = result.catch(() => {});
+        this.mutationQueue = result.then(() => undefined, () => undefined);
         return result;
     }
 
@@ -1751,6 +1768,7 @@ export default class SideNote extends MindmapPluginBase {
         save.onclick = async () => {
             save.disabled = true;
             try {
+                await this.enqueueMutation(async () => {
                 if (this.pendingRebind !== target || !this.comments.includes(target) || editor.getValue() !== text) throw Error('原文或批注已变化，请重新选择');
                 const replacement = rebindComment(target, text, from, to, await generateHash(text.slice(from, to)));
                 if (editor.getValue() !== text) throw Error('原文已变化，请重新选择');
@@ -1758,6 +1776,7 @@ export default class SideNote extends MindmapPluginBase {
                 try { await this.saveCommentsForSingleFile(filePath); }
                 catch (error) { restoreComment(target, before); throw error; }
                 this.pendingRebind = null; this.refreshViews(); this.refreshEditorDecorations(); modal.close(); new Notice('批注已重新绑定');
+                });
             } catch (error) { save.disabled = false; new Notice(error instanceof Error ? error.message : '绑定保存失败'); }
         }; modal.open();
     }
@@ -1770,6 +1789,21 @@ export default class SideNote extends MindmapPluginBase {
     imageHashes: Record<string, string> = {};
     private orphanNoticeTimer: number | null = null;
     private pendingOrphans: Comment[] = [];
+    private readonly notifiedOrphans = new Set<string>();
+    private activeOrphanNotice: Notice | null = null;
+    private anchorCheckTimer: number | null = null;
+    private readonly pendingAnchorChecks = new Set<string>();
+    private readonly anchorCheckAttempts = new Map<string, number>();
+    private unloading = false;
+    private needsCommentStorageMigration = false;
+    private readonly loadedCommentContents = new Map<string, string>();
+    private storageCleanupWarned = false;
+    private commentDataReloadTimer: number | null = null;
+    private commentDataReloadAttempts = 0;
+    private initialCommentReloadNeeded = false;
+    private commentDataLoaded = false;
+    private readonly pendingNoteRenames = new Map<string, { newPath: string; attempts: number }>();
+    private renameRetryTimer: number | null = null;
     private isSaving: boolean = false;
     private editorViews: Set<EditorView> = new Set();
     private readonly markdownToolbars: Map<MarkdownView, () => void> = new Map();
@@ -3016,6 +3050,7 @@ export default class SideNote extends MindmapPluginBase {
     }
 
     public refreshViews() {
+        this.pruneOrphanNotices();
         this.app.workspace.getLeavesOfType("sidenote-view").forEach(leaf => {
             if (leaf.view instanceof SideNoteView) leaf.view.renderComments();
         });
@@ -3031,7 +3066,7 @@ export default class SideNote extends MindmapPluginBase {
     private getSideNoteFilePath(notePath: string): string {
         const folder = this.toolSettings.markdownFolder.trim() || DEFAULT_SETTINGS.markdownFolder;
         const normalized = folder.replace(/^\/+|\/+$/g, "");
-        const base = notePath.replace(/\.md$/i, "").replace(/\//g, "__");
+        const base = commentStorageBasename(notePath);
         return `${normalized}/${base}-sidenote.md`;
     }
 
@@ -3073,7 +3108,7 @@ export default class SideNote extends MindmapPluginBase {
     private getCommentsJsonPath(notePath: string): string {
         const folder = this.toolSettings.commentsDataFolder?.trim() || DEFAULT_SETTINGS.commentsDataFolder;
         const normalized = normalizePath(folder);
-        const base = notePath.replace(/\.md$/i, "").replace(/\//g, "__");
+        const base = commentStorageBasename(notePath);
         return `${normalized}/${base}.json`;
     }
 
@@ -3087,55 +3122,89 @@ export default class SideNote extends MindmapPluginBase {
     }
 
     async loadAllCommentsFromFiles(): Promise<Comment[]> {
+        return this.enqueueWrite(() => this.readAllCommentsFromFiles());
+    }
+
+    private async readAllCommentsFromFiles(): Promise<Comment[]> {
         const folder = this.toolSettings.commentsDataFolder?.trim() || DEFAULT_SETTINGS.commentsDataFolder;
-        const normalized = normalizePath(folder);
-        const allComments: Comment[] = [];
+        const normalized = normalizePath(folder), allComments: Comment[] = [];
+        const paths = new Set<string>(), contents = new Map<string, string>(), unreadable = new Set<string>();
+        let needsMigration = false;
+        const failedOwnedFiles: string[] = [];
         if (await this.app.vault.adapter.exists(normalized)) {
+            await recoverCommentFiles(this.app.vault.adapter, normalized);
             const listing = await this.app.vault.adapter.list(normalized);
             for (const filePath of listing.files) {
-                if (filePath.endsWith('.json')) {
-                    try {
-                        const content = await this.app.vault.adapter.read(filePath);
-                        const comments = JSON.parse(content) as Comment[];
-                        if (!Array.isArray(comments) || comments.some(c => !c || typeof c.filePath !== 'string' || typeof c.timestamp !== 'number')) throw Error('批注文件格式异常');
-                        allComments.push(...comments);
-                        this.loadedCommentPaths.add(filePath);
-                    } catch (e) {
-                        this.unreadableCommentPaths.add(filePath);
-                        console.error(`Error loading comments from ${filePath}:`, e);
-                    }
+                if (!filePath.endsWith('.json') || filePath.endsWith('/.taube-comments-pending.json') || filePath.endsWith('/.taube-comments-committed.json')) continue;
+                try {
+                    const content = await this.app.vault.adapter.read(filePath);
+                    const comments = JSON.parse(content) as Comment[];
+                    if (!Array.isArray(comments) || comments.some(c => !c || typeof c.filePath !== 'string' || typeof c.timestamp !== 'number')) throw Error('批注文件格式异常');
+                    allComments.push(...comments); paths.add(filePath); contents.set(filePath, content);
+                    if (comments.some(c => this.getCommentsJsonPath(c.filePath) !== filePath)) needsMigration = true;
+                } catch (error) {
+                    unreadable.add(filePath);
+                    const name = filePath.slice(filePath.lastIndexOf('/') + 1);
+                    if (this.loadedCommentPaths.has(filePath) || /^note-v2-[a-f0-9]{64}\.json$/i.test(name)) failedOwnedFiles.push(filePath);
+                    console.error(`Error loading comments from ${filePath}:`, error);
                 }
             }
         }
+        if (failedOwnedFiles.length) throw Error('部分批注文件暂时无法读取，已保留内存批注，稍后重试');
+        // Publish all read baselines together with the successful result.
+        this.loadedCommentPaths.clear(); paths.forEach(path => this.loadedCommentPaths.add(path));
+        this.loadedCommentContents.clear(); contents.forEach((content, path) => this.loadedCommentContents.set(path, content));
+        this.unreadableCommentPaths.clear(); unreadable.forEach(path => this.unreadableCommentPaths.add(path));
+        this.needsCommentStorageMigration = needsMigration;
+        this.commentDataLoaded = true;
         return allComments;
     }
 
     async saveAllCommentFiles(): Promise<void> {
-        const normalized = await this.ensureCommentsDataFolder();
-        const grouped: Record<string, Comment[]> = {};
-        for (const comment of this.comments) {
-            if (!grouped[comment.filePath]) grouped[comment.filePath] = [];
-            grouped[comment.filePath].push(comment);
-        }
-        const writtenPaths = new Set<string>();
-        for (const [filePath, comments] of Object.entries(grouped)) {
-            const jsonPath = this.getCommentsJsonPath(filePath);
-            if (this.unreadableCommentPaths.has(jsonPath)) throw Error('批注文件读取失败，已阻止覆盖，请先修复或备份该文件');
-            await this.app.vault.adapter.write(jsonPath, JSON.stringify(comments, null, 2));
-            writtenPaths.add(jsonPath);
-            this.loadedCommentPaths.add(jsonPath);
-        }
-        try {
-            const listing = await this.app.vault.adapter.list(normalized);
-            for (const existing of listing.files) {
-                if (this.loadedCommentPaths.has(existing) && !writtenPaths.has(existing)) {
-                    await this.app.vault.adapter.remove(existing);
-                    this.loadedCommentPaths.delete(existing);
-                }
+        return this.enqueueWrite(() => this.writeAllCommentFiles());
+    }
+
+    /** Check for external edits before publishing a recoverable transaction. */
+    private async commitCommentChanges(changes: Map<string, string | null>, folder: string) {
+        const adapter = this.app.vault.adapter;
+        await recoverCommentFiles(adapter, folder);
+        for (const path of changes.keys()) {
+            if (this.unreadableCommentPaths.has(path)) throw Error('批注文件读取失败，已阻止覆盖，请先修复或备份该文件');
+            const exists = await adapter.exists(path);
+            const expected = this.loadedCommentContents.get(path);
+            if (exists && (expected === undefined || await adapter.read(path) !== expected)) {
+                this.scheduleCommentDataReload();
+                throw Error('批注文件已有外部更新，已阻止覆盖；请刷新批注数据后重试');
             }
-        } catch (e) {
-            console.error("Error cleaning up comment files:", e);
+            if (!exists && expected !== undefined) { this.scheduleCommentDataReload(); throw Error('批注文件已被外部移除，已阻止覆盖；请刷新批注数据后重试'); }
         }
+        try { await commitCommentFiles(adapter, changes, folder); }
+        catch (error) {
+            if (!(error instanceof CommentStorageCommitError) || !error.committed) throw error;
+            if (!this.storageCleanupWarned) {
+                this.storageCleanupWarned = true;
+                new Notice('批注已保存，备份清理将在下次自动重试。');
+            }
+        }
+        for (const [path, content] of changes) {
+            if (content === null) { this.loadedCommentPaths.delete(path); this.loadedCommentContents.delete(path); }
+            else { this.loadedCommentPaths.add(path); this.loadedCommentContents.set(path, content); }
+        }
+    }
+
+    private async writeAllCommentFiles(): Promise<void> {
+        const folder = await this.ensureCommentsDataFolder();
+        const grouped = new Map<string, Comment[]>();
+        for (const comment of this.comments) {
+            const group = grouped.get(comment.filePath) ?? [];
+            group.push(comment); grouped.set(comment.filePath, group);
+        }
+        const changes = new Map<string, string | null>();
+        for (const [path, comments] of grouped) changes.set(this.getCommentsJsonPath(path), JSON.stringify(comments, null, 2));
+        const listing = await this.app.vault.adapter.list(folder);
+        for (const existing of listing.files) if (this.loadedCommentPaths.has(existing) && !changes.has(existing)) changes.set(existing, null);
+        await this.commitCommentChanges(changes, folder);
+        this.needsCommentStorageMigration = false;
     }
 
     async saveCommentsForSingleFile(filePath: string): Promise<void> {
@@ -3143,19 +3212,11 @@ export default class SideNote extends MindmapPluginBase {
     }
 
     private async writeCommentsForSingleFile(filePath: string): Promise<void> {
-        await this.ensureCommentsDataFolder();
-        const commentsForFile = this.comments.filter(c => c.filePath === filePath);
-        const jsonPath = this.getCommentsJsonPath(filePath);
-        if (this.unreadableCommentPaths.has(jsonPath)) throw Error('批注文件读取失败，已阻止覆盖，请先修复或备份该文件');
-        if (commentsForFile.length === 0) {
-            if (await this.app.vault.adapter.exists(jsonPath)) {
-                await this.app.vault.adapter.remove(jsonPath);
-                this.loadedCommentPaths.delete(jsonPath);
-            }
-        } else {
-            await this.app.vault.adapter.write(jsonPath, JSON.stringify(commentsForFile, null, 2));
-            this.loadedCommentPaths.add(jsonPath);
-        }
+        if (this.needsCommentStorageMigration) { await this.writeAllCommentFiles(); return; }
+        const folder = await this.ensureCommentsDataFolder();
+        const comments = this.comments.filter(c => c.filePath === filePath);
+        const path = this.getCommentsJsonPath(filePath);
+        await this.commitCommentChanges(new Map([[path, comments.length ? JSON.stringify(comments, null, 2) : null]]), folder);
     }
 
     /**
@@ -3165,70 +3226,226 @@ export default class SideNote extends MindmapPluginBase {
      * stay orphaned so nothing is bound silently to the wrong text.
      */
     public async repairOrphanedComments(scope: 'all' | 'current' = 'all'): Promise<void> {
-        const orphaned = this.comments.filter(comment => comment.isOrphaned);
-        if (!orphaned.length) { new Notice('没有定位异常需要修复。'); return; }
-        const activeFile = scope === 'current' ? this.app.workspace.getActiveFile() : null;
-        const counts = new Map<string, number>();
-        for (const comment of orphaned) {
-            if (activeFile && comment.filePath !== activeFile.path) continue;
-            counts.set(comment.filePath, (counts.get(comment.filePath) ?? 0) + 1);
-        }
-        if (!counts.size) { new Notice('当前笔记没有定位异常。'); return; }
-        let repaired = 0;
-        let remaining = 0;
-        for (const [filePath, count] of counts) {
-            const file = this.app.vault.getAbstractFileByPath(filePath);
-            if (!(file instanceof TFile)) { remaining += count; continue; }
-            try {
-                const content = await this.app.vault.read(file);
-                const result = await this.commentManager.repairOrphanedComments(content, filePath);
-                repaired += result.repaired;
-                remaining += result.remaining;
-                if (result.repaired) await this.saveCommentsForSingleFile(filePath);
-            } catch (error) {
-                console.error('修复定位异常失败', filePath, error);
-                remaining += count;
+        return this.enqueueMutation(async () => {
+            const orphaned = this.comments.filter(comment => comment.isOrphaned);
+            if (!orphaned.length) { new Notice('没有定位异常需要修复。'); return; }
+            const activeFile = scope === 'current' ? this.app.workspace.getActiveFile() : null;
+            if (scope === 'current' && !activeFile) { new Notice('请先打开要修复的笔记。'); return; }
+            const counts = new Map<string, number>();
+            for (const comment of orphaned) {
+                if (activeFile && comment.filePath !== activeFile.path) continue;
+                counts.set(comment.filePath, (counts.get(comment.filePath) ?? 0) + 1);
             }
-        }
-        this.refreshViews();
-        this.refreshEditorDecorations();
-        this.scheduleRenderedTableHighlights();
-        if (repaired === 0) new Notice(`已检查 ${counts.size} 个笔记，仍有 ${remaining} 条需要手动定位或删除。`);
-        else new Notice(remaining
-            ? `已自动修复 ${repaired} 条定位异常，仍有 ${remaining} 条需要手动处理。`
-            : `已自动修复全部 ${repaired} 条定位异常。`);
+            if (!counts.size) { new Notice('当前笔记没有定位异常。'); return; }
+            let repaired = 0, remaining = 0, failed = 0;
+            for (const [filePath, count] of counts) {
+                const file = this.app.vault.getAbstractFileByPath(filePath);
+                if (!(file instanceof TFile)) { remaining += count; continue; }
+                const before = this.commentManager.getCommentsForFile(filePath).map(target => ({ target, value: { ...target } }));
+                try {
+                    const content = await this.app.vault.read(file);
+                    const result = await this.commentManager.repairOrphanedComments(content, filePath);
+                    if (result.repaired) await this.saveCommentsForSingleFile(filePath);
+                    repaired += result.repaired; remaining += result.remaining;
+                } catch (error) {
+                    before.forEach(({ target, value }) => restoreComment(target, value));
+                    console.error('修复定位异常失败', filePath, error);
+                    remaining += count; failed += count;
+                }
+            }
+            this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
+            new Notice(failed
+                ? `已修复 ${repaired} 条，${failed} 条保存失败，已保留原状态，可重试；仍有 ${remaining} 条待处理。`
+                : repaired ? `已自动修复 ${repaired} 条定位异常，仍有 ${remaining} 条待处理。`
+                : `已检查 ${counts.size} 个笔记，仍有 ${remaining} 条需要手动定位。`);
+        });
     }
 
-    private showOrphanDeletionNotice(orphans: Comment[]) {
-        if (orphans.length === 0) return;
-        const fragment = createFragment();
-        const span = createSpan();
-        span.textContent = `${orphans.length} 条批注已失去原文，是否删除？`;
-        fragment.appendChild(span);
-        fragment.appendChild(createEl('br'));
-        const btnContainer = createDiv();
-        btnContainer.className = 'sidenote-notice-actions';
-        const deleteBtn = createEl('button');
-        deleteBtn.textContent = '删除';
-        deleteBtn.className = 'mod-warning';
-        const keepBtn = createEl('button');
-        keepBtn.textContent = '保留';
-        btnContainer.appendChild(deleteBtn);
-        btnContainer.appendChild(keepBtn);
-        fragment.appendChild(btnContainer);
-        const notice = new Notice(fragment, 0);
-        deleteBtn.onclick = async () => {
-            for (const oc of orphans) {
-                this.commentManager.deleteComment(oc.timestamp);
+    /** Reload synchronized data on the same queues used by edits and storage. */
+    public async refreshCommentData(retryRenames = false): Promise<void> {
+        await this.retryPendingNoteRenames(retryRenames);
+        return this.enqueueMutation(async () => {
+            if (this.unloading) return;
+            const loaded = await this.loadAllCommentsFromFiles();
+            const current = new Map(this.comments.map(c => [this.orphanNoticeKey(c), c]));
+            const next = loaded.map(c => {
+                const existing = current.get(this.orphanNoticeKey(c));
+                return existing && JSON.stringify(existing) === JSON.stringify(c) ? existing : c;
+            });
+            this.comments.splice(0, this.comments.length, ...next);
+            this.commentManager.updateComments(this.comments);
+            this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
+            if (this.pendingNoteRenames.size) this.scheduleRenameRetry();
+            new Set(this.comments.map(c => c.filePath)).forEach(path => this.scheduleAnchorCheck(path));
+        });
+    }
+
+    private scheduleCommentDataReload(retry = false): void {
+        if (this.unloading) return;
+        if (!retry) this.commentDataReloadAttempts = 0;
+        if (this.commentDataReloadTimer !== null) window.clearTimeout(this.commentDataReloadTimer);
+        this.commentDataReloadTimer = window.setTimeout(() => {
+            this.commentDataReloadTimer = null;
+            void this.refreshCommentData().then(() => { this.commentDataReloadAttempts = 0; }).catch(error => {
+                console.error('刷新批注数据失败', error);
+                if (++this.commentDataReloadAttempts < 3) this.scheduleCommentDataReload(true);
+                else new Notice('批注数据刷新失败，原文件已保留；可运行“重新加载并自动校验批注”重试。');
+            });
+        }, retry ? 1500 : 500);
+    }
+
+    private persistPendingNoteRenames(): void {
+        try { this.app.saveLocalStorage('taube-markdown-tool:pending-note-renames', [...this.pendingNoteRenames].map(([oldPath, value]) => ({ oldPath, ...value }))); }
+        catch (error) { console.error('保存待重试批注路径失败', error); }
+    }
+
+    private loadPendingNoteRenames(): void {
+        try {
+            const stored: unknown = this.app.loadLocalStorage('taube-markdown-tool:pending-note-renames');
+            const valid = (path: unknown): path is string => typeof path === 'string' && !!path && !/[\\:\r\n]/.test(path) && !path.split('/').some(part => !part || part === '.' || part === '..');
+            if (Array.isArray(stored)) for (const item of stored) {
+                if (item && typeof item === 'object') {
+                    const value = item as Record<string, unknown>;
+                    if (valid(value.oldPath) && valid(value.newPath) && value.oldPath !== value.newPath) {
+                        this.pendingNoteRenames.set(value.oldPath, { newPath: value.newPath, attempts: 0 });
+                    }
+                }
             }
-            await this.saveToolData();
-            this.refreshViews();
-            notice.hide();
-            new Notice(`已删除 ${orphans.length} 条孤立批注。`);
-        };
-        keepBtn.onclick = () => {
-            notice.hide();
-        };
+            if (this.pendingNoteRenames.size) this.scheduleRenameRetry();
+        } catch (error) { console.error('读取待重试批注路径失败', error); }
+    }
+
+    private scheduleRenameRetry(): void {
+        if (this.unloading || this.renameRetryTimer !== null) return;
+        if (![...this.pendingNoteRenames.values()].some(value => value.attempts < 3)) return;
+        this.renameRetryTimer = window.setTimeout(() => {
+            this.renameRetryTimer = null;
+            void this.retryPendingNoteRenames().catch(error => console.error('重试批注路径失败', error));
+        }, 1500);
+    }
+
+    private async retryPendingNoteRenames(force = false): Promise<void> {
+        const pending = [...this.pendingNoteRenames];
+        for (const [oldPath, value] of pending) {
+            if (this.unloading) return;
+            if (force) value.attempts = 0;
+            if (value.attempts < 3) {
+                try { await this.handleNoteRename(oldPath, value.newPath, true); }
+                catch (error) { console.error('批注路径尚未迁移', error); }
+            }
+        }
+    }
+
+    /** Rename according to actual vault paths, including outstanding move intents. */
+    public async handleNoteRename(oldPath: string, newPath: string, retry = false): Promise<void> {
+        return this.enqueueMutation(async () => {
+            if (retry) {
+                const pending = this.pendingNoteRenames.get(oldPath);
+                if (!pending || pending.attempts >= 3) return;
+                newPath = pending.newPath;
+            }
+            const updates = this.comments.flatMap(target => {
+                const logicalPath = target.filePath;
+                const physicalPath = this.pendingNoteRenames.get(logicalPath)?.newPath ?? logicalPath;
+                const matches = retry ? logicalPath === oldPath : physicalPath === oldPath || physicalPath.startsWith(oldPath + '/');
+                return matches ? [{ target, logicalPath, destination: retry ? newPath : newPath + physicalPath.slice(oldPath.length), value: { ...target } }] : [];
+            });
+            if (!updates.length) {
+                if (retry && !this.commentDataLoaded) return;
+                if (retry) { this.pendingNoteRenames.delete(oldPath); this.persistPendingNoteRenames(); }
+                return;
+            }
+            const keys = new Set(updates.map(update => update.logicalPath));
+            for (const update of updates) this.pendingNoteRenames.set(update.logicalPath, { newPath: update.destination, attempts: this.pendingNoteRenames.get(update.logicalPath)?.attempts ?? 0 });
+            this.persistPendingNoteRenames();
+            updates.forEach(({ target, destination }) => { target.filePath = destination; });
+            try { await this.saveToolData(); }
+            catch (error) {
+                updates.forEach(({ target, value }) => restoreComment(target, value));
+                keys.forEach(path => { const pending = this.pendingNoteRenames.get(path); if (pending) pending.attempts++; });
+                this.persistPendingNoteRenames(); this.scheduleRenameRetry(); throw error;
+            }
+            keys.forEach(path => this.pendingNoteRenames.delete(path)); this.persistPendingNoteRenames();
+            this.refreshViews(); this.refreshEditorDecorations();
+            new Set(updates.map(update => update.destination)).forEach(path => this.scheduleAnchorCheck(path));
+        });
+    }
+
+    /** Debounce edits and synchronization bursts; retry transient I/O failures. */
+    public scheduleAnchorCheck(filePath: string, retry = false): void {
+        if (this.unloading || !this.comments.some(c => c.filePath === filePath)) return;
+        if (!retry) this.anchorCheckAttempts.delete(filePath);
+        this.pendingAnchorChecks.add(filePath);
+        if (this.anchorCheckTimer !== null) window.clearTimeout(this.anchorCheckTimer);
+        this.anchorCheckTimer = window.setTimeout(() => { void this.flushAnchorChecks(); }, retry ? 1500 : 500);
+    }
+
+    private async flushAnchorChecks(): Promise<void> {
+        if (this.anchorCheckTimer !== null) window.clearTimeout(this.anchorCheckTimer);
+        this.anchorCheckTimer = null;
+        const paths = [...this.pendingAnchorChecks]; this.pendingAnchorChecks.clear();
+        for (const filePath of paths) {
+            if (this.unloading) return;
+            try { await this.revalidateCommentsForFile(filePath); this.anchorCheckAttempts.delete(filePath); }
+            catch (error) {
+                console.error('自动校验批注失败，已保留原状态', filePath, error);
+                const attempts = (this.anchorCheckAttempts.get(filePath) ?? 0) + 1;
+                this.anchorCheckAttempts.set(filePath, attempts);
+                if (attempts < 3) this.scheduleAnchorCheck(filePath, true);
+            }
+        }
+    }
+
+    public async revalidateCommentsForFile(filePath: string): Promise<void> {
+        return this.enqueueMutation(async () => {
+            if (this.unloading) return;
+            const file = this.app.vault.getAbstractFileByPath(filePath);
+            if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') return;
+            const before = this.commentManager.getCommentsForFile(filePath).map(target => ({ target, value: { ...target } }));
+            if (!before.length) return;
+            const content = await this.app.vault.read(file);
+            if (this.unloading || file.path !== filePath) return;
+            try {
+                await this.commentManager.updateCommentCoordinatesForFile(content, filePath);
+                if (this.unloading) { before.forEach(({ target, value }) => restoreComment(target, value)); return; }
+                if (!before.some(({ target, value }) => JSON.stringify(target) !== JSON.stringify(value))) return;
+                await this.saveCommentsForSingleFile(filePath);
+            } catch (error) { before.forEach(({ target, value }) => restoreComment(target, value)); throw error; }
+            this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
+            this.queueOrphanNotice(before.filter(({ target, value }) => target.isOrphaned && !value.isOrphaned).map(({ target }) => target));
+        });
+    }
+
+    private orphanNoticeKey(comment: Comment): string {
+        return JSON.stringify([comment.filePath, comment.timestamp]);
+    }
+
+    /** Recovering or deleting an annotation ends its current warning episode. */
+    private pruneOrphanNotices() {
+        const live = new Set(this.comments.filter(c => c.isOrphaned).map(c => this.orphanNoticeKey(c)));
+        for (const key of this.notifiedOrphans) if (!live.has(key)) this.notifiedOrphans.delete(key);
+    }
+
+    public showOrphanNotice(orphans: Comment[]) {
+        this.pruneOrphanNotices();
+        const live = new Map(this.comments.filter(c => c.isOrphaned).map(c => [this.orphanNoticeKey(c), c]));
+        const keys = [...new Set(orphans.map(c => this.orphanNoticeKey(c)))].filter(key => live.has(key) && !this.notifiedOrphans.has(key));
+        if (!keys.length) return;
+        keys.forEach(key => this.notifiedOrphans.add(key));
+        this.activeOrphanNotice?.hide();
+        this.activeOrphanNotice = new Notice(`${keys.length} 条批注定位异常，内容已保留。可在批注选项中修复或重新绑定。`, 5000);
+    }
+
+    private queueOrphanNotice(orphans: Comment[]) {
+        if (!orphans.length) return;
+        this.pendingOrphans.push(...orphans);
+        if (this.orphanNoticeTimer !== null) window.clearTimeout(this.orphanNoticeTimer);
+        this.orphanNoticeTimer = window.setTimeout(() => {
+            this.orphanNoticeTimer = null;
+            const pending = this.pendingOrphans;
+            this.pendingOrphans = [];
+            this.showOrphanNotice(pending);
+        }, 2000);
     }
 
     // --- 捕获上下文的辅助函数 ---
@@ -3348,6 +3565,7 @@ export default class SideNote extends MindmapPluginBase {
         this.drafts = new DraftStore(window.localStorage, identity);
         this.commentManager = new CommentManager(this.comments);
         await this.migrateComments();
+        if (this.needsCommentStorageMigration) await this.saveToolData();
         // Obsidian calls getSettingDefinitions() synchronously inside
         // addSettingTab(), so the annotation tab must come after toolSettings
         // and commentManager are loaded. Adding it first also keeps the plugin
@@ -3369,7 +3587,12 @@ export default class SideNote extends MindmapPluginBase {
         ]);
         this.registerMarkdownPostProcessor((el, ctx) => this.registerReadingViewSection(el, ctx), 100);
         this.registerReadingViewInteractions();
-        this.app.workspace.onLayoutReady(() => { this.rerenderReadingViews(); this.syncMarkdownToolbars(); });
+        this.app.workspace.onLayoutReady(() => {
+            this.rerenderReadingViews(); this.syncMarkdownToolbars();
+            const active = this.app.workspace.getActiveFile();
+            if (active) this.scheduleAnchorCheck(active.path);
+            new Set(this.comments.filter(c => c.isOrphaned).map(c => c.filePath)).forEach(path => this.scheduleAnchorCheck(path));
+        });
         this.registerEvent(this.app.workspace.on('layout-change', () => this.syncMarkdownToolbars()));
         this.registerSelectionToolbarDismissal();
         this.scheduleRenderedTableHighlights();
@@ -3414,6 +3637,7 @@ export default class SideNote extends MindmapPluginBase {
         this.addCommand({ id: 'open-selection-toolbar', name: '打开文字工具栏', editorCallback: editor => this.openSelectionToolbar(editor) });
         this.addCommand({ id: 'red-selected-text', name: '为选中内容标红文字', editorCallback: (editor, view) => this.handleAddComment(editor, view, 'text-color', '#dc2626', true) });
         this.addCommand({ id: 'clear-selected-mark', name: '清除所选标记（保留批注）', editorCallback: (editor, view) => this.handleAddComment(editor, view, 'none', undefined, true) });
+        this.addCommand({ id: 'reload-annotations', name: '重新加载并自动校验批注', callback: () => { void this.refreshCommentData(true).catch(() => new Notice('刷新批注数据失败，原文件已保留，请重试')); } });
         this.addCommand({ id: 'repair-orphans', name: '批量修复定位异常', callback: () => { void this.repairOrphanedComments(); } });
         this.addCommand({ id: 'block-move-up', name: '上移当前块（段落 / 列表项 / 标题）', editorCallback: editor => this.moveActiveBlock('up', editor) });
         this.addCommand({ id: 'block-move-down', name: '下移当前块（段落 / 列表项 / 标题）', editorCallback: editor => this.moveActiveBlock('down', editor) });
@@ -3548,64 +3772,53 @@ export default class SideNote extends MindmapPluginBase {
                 this.refreshEditorDecorations();
                 this.scheduleRenderedTableHighlights();
                 this.syncMarkdownToolbars();
+                if (file) this.scheduleAnchorCheck(file.path);
             }
         }));
         this.registerEvent(this.app.vault.on('rename', async (file, oldPath) => {
-            if (file instanceof TFile && file.extension === 'md') {
-                this.commentManager.renameFile(oldPath, file.path);
-                await this.saveToolData();
-                this.refreshViews();
+            if ((file instanceof TFile && file.extension.toLowerCase() === 'md') || file instanceof TFolder) {
+                try { await this.handleNoteRename(oldPath, file.path); }
+                catch (error) { console.error('更新批注路径失败', error); new Notice('批注路径暂未保存，原数据已保留，正在后台重试。'); }
             }
         }));
+        const scheduleDataChange = (file: { path: string }) => {
+            const folder = normalizePath(this.toolSettings.commentsDataFolder?.trim() || DEFAULT_SETTINGS.commentsDataFolder);
+            if (file.path.startsWith(folder + '/') && file.path.endsWith('.json') && !file.path.slice(folder.length + 1).toLowerCase().startsWith('.taube-comments-')) this.scheduleCommentDataReload();
+        };
+        this.registerEvent(this.app.vault.on('create', scheduleDataChange));
+        this.registerEvent(this.app.vault.on('delete', scheduleDataChange));
         this.registerEvent(this.app.vault.on('modify', async (file) => {
-            if (this.isSaving) return;
-            // Ignore our own comment data files
             const dataFolder = normalizePath(this.toolSettings.commentsDataFolder?.trim() || DEFAULT_SETTINGS.commentsDataFolder);
-            if (file.path.startsWith(dataFolder + '/')) return;
-
+            if (file.path.startsWith(dataFolder + '/')) {
+                if (file.path.endsWith('.json') && !file.path.slice(dataFolder.length + 1).toLowerCase().startsWith('.taube-comments-')) this.scheduleCommentDataReload();
+                return;
+            }
             const pluginDataPath = normalizePath(`${this.app.vault.configDir}/plugins/${this.manifest.id}/data.json`);
-            if (file.path === pluginDataPath || (file instanceof TFile && file.name === 'data.json' && file.parent?.name === this.manifest.id)) {
+            if (file.path === pluginDataPath) {
+                // Only ignore our own settings writes, never actual Markdown edits.
+                if (this.isSaving) return;
                 try {
-                    await this.loadPluginData();
-                    this.commentManager.updateComments(this.comments);
-                    this.refreshViews();
-                    this.refreshEditorDecorations();
-                    this.scheduleRenderedTableHighlights();
-                } catch (error) { console.error("Error reloading plugin data:", error); }
-            } else if (file instanceof TFile && file.extension === 'md') {
-                try {
-                    // Track orphans before update
-                    const beforeOrphanTimestamps = new Set(
-                        this.commentManager.getCommentsForFile(file.path)
-                            .filter(c => c.isOrphaned)
-                            .map(c => c.timestamp)
-                    );
-
-                    const fileContent = await this.app.vault.read(file);
-                    await this.commentManager.updateCommentCoordinatesForFile(fileContent, file.path);
-                    await this.saveCommentsForSingleFile(file.path);
-                    this.refreshViews();
-                    this.refreshEditorDecorations();
-                    this.scheduleRenderedTableHighlights();
-
-                    // Detect newly orphaned comments
-                    const newOrphans = this.commentManager.getCommentsForFile(file.path)
-                        .filter(c => c.isOrphaned && !beforeOrphanTimestamps.has(c.timestamp));
-                    if (newOrphans.length > 0) {
-                        this.pendingOrphans.push(...newOrphans);
-                        if (this.orphanNoticeTimer) window.clearTimeout(this.orphanNoticeTimer);
-                        this.orphanNoticeTimer = window.setTimeout(() => {
-                            const uniqueOrphans = [...new Map(this.pendingOrphans.map(o => [o.timestamp, o])).values()];
-                            this.showOrphanDeletionNotice(uniqueOrphans);
-                            this.pendingOrphans = [];
-                        }, 2000);
-                    }
-                } catch (error) { console.error("Error updating comment coordinates:", error); }
+                    await this.enqueueMutation(async () => {
+                        await this.loadPluginData(); this.commentManager.updateComments(this.comments);
+                        this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
+                    });
+                } catch (error) { console.error('Error reloading plugin data:', error); }
+            } else if (file instanceof TFile && file.extension.toLowerCase() === 'md') {
+                this.scheduleAnchorCheck(file.path);
             }
         }));
+        this.loadPendingNoteRenames();
+        if (this.initialCommentReloadNeeded) this.scheduleCommentDataReload();
     }
 
     onunload() {
+        this.unloading = true;
+        if (this.renameRetryTimer !== null) window.clearTimeout(this.renameRetryTimer);
+        this.renameRetryTimer = null;
+        if (this.commentDataReloadTimer !== null) window.clearTimeout(this.commentDataReloadTimer);
+        this.commentDataReloadTimer = null;
+        if (this.anchorCheckTimer !== null) window.clearTimeout(this.anchorCheckTimer);
+        this.anchorCheckTimer = null; this.pendingAnchorChecks.clear(); this.anchorCheckAttempts.clear();
         CommentModal.closeActive();
         this.hideSelectionToolbars();
         this.hideReadingTooltip();
@@ -3615,6 +3828,10 @@ export default class SideNote extends MindmapPluginBase {
             window.clearTimeout(this.orphanNoticeTimer);
             this.orphanNoticeTimer = null;
         }
+        this.pendingOrphans = [];
+        this.activeOrphanNotice?.hide();
+        this.activeOrphanNotice = null;
+        this.notifiedOrphans.clear();
         // Base plugin cleans up registered views, commands, events and styles.
         super.onunload();
     }
@@ -3664,12 +3881,19 @@ export default class SideNote extends MindmapPluginBase {
         });
     }
 
-    async editComment(timestamp: number, newCommentText: string, newColor?: string, newMarkType?: CommentMarkType, message: string = "批注已更新") {
+    async editComment(timestamp: number, newCommentText: string, newColor?: string, newMarkType?: CommentMarkType, message: string = "批注已更新", expectedVersion?: string) {
         await this.enqueueMutation(async () => {
-            const target = this.comments.find(c => c.timestamp === timestamp);
+            const matches = this.comments.filter(c => c.timestamp === timestamp);
+            const target = expectedVersion === undefined ? matches[0] : matches.find(c => commentEditVersion(c) === expectedVersion);
+            if (!target && matches.length) throw new CommentConflictError('批注已有新版本，未覆盖；草稿已保留，请重新打开后合并。');
             if (!target) throw Error('原批注已不存在，草稿已保留');
+            if (expectedVersion !== undefined && commentEditVersion(target) !== expectedVersion) {
+                throw new CommentConflictError('批注已有新版本，未覆盖；草稿已保留，请重新打开后合并。');
+            }
             const before = { ...target };
-            this.commentManager.editComment(timestamp, newCommentText, newColor, newMarkType);
+            target.comment = newCommentText;
+            if (newColor) target.color = newColor;
+            if (newMarkType) target.markType = newMarkType;
             try { await this.saveCommentsForSingleFile(target.filePath); }
             catch (error) { restoreComment(target, before); throw error; }
             this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
@@ -3677,29 +3901,46 @@ export default class SideNote extends MindmapPluginBase {
         });
     }
 
-    async deleteComment(timestamp: number) {
-        const deletedComment = this.comments.find(comment => comment.timestamp === timestamp);
-        if (!deletedComment) return;
-        this.commentManager.deleteComment(timestamp);
-        await this.saveToolData();
-        this.refreshViews();
-        this.refreshEditorDecorations();
+    public async deleteOrphanedComments(): Promise<number> {
+        return this.enqueueMutation(async () => {
+            const before = [...this.comments];
+            const count = this.commentManager.deleteOrphanedComments();
+            if (!count) return 0;
+            try { await this.saveToolData(); }
+            catch (error) { this.comments.splice(0, this.comments.length, ...before); throw error; }
+            this.refreshViews(); this.refreshEditorDecorations();
+            return count;
+        });
+    }
 
-        const notice = new Notice('', 7000);
-        notice.messageEl.empty();
-        const row = notice.messageEl.createDiv('sidenote-undo-notice');
-        row.createSpan({ text: '批注已删除' });
-        const undoButton = row.createEl('button', { text: '撤销' });
-        undoButton.onclick = async () => {
-            if (!this.comments.some(comment => comment.timestamp === deletedComment.timestamp)) {
-                await this.commentManager.addComment(deletedComment);
-                await this.saveToolData();
-                this.refreshViews();
-                this.refreshEditorDecorations();
-                new Notice('已恢复批注');
-            }
-            notice.hide();
-        };
+    async deleteComment(timestamp: number, filePath?: string) {
+        return this.enqueueMutation(async () => {
+            const index = this.comments.findIndex(comment => comment.timestamp === timestamp && (filePath === undefined || comment.filePath === filePath));
+            const deletedComment = this.comments[index];
+            if (!deletedComment) return;
+            this.comments.splice(index, 1);
+            try { await this.saveCommentsForSingleFile(deletedComment.filePath); }
+            catch (error) { this.comments.splice(index, 0, deletedComment); throw error; }
+            this.refreshViews(); this.refreshEditorDecorations();
+            const notice = new Notice('', 7000);
+            notice.messageEl.empty();
+            const row = notice.messageEl.createDiv('sidenote-undo-notice');
+            row.createSpan({ text: '批注已删除' });
+            const undoButton = row.createEl('button', { text: '撤销' });
+            undoButton.onclick = async () => {
+                undoButton.disabled = true;
+                try {
+                    await this.enqueueMutation(async () => {
+                        if (this.comments.some(comment => comment.timestamp === deletedComment.timestamp && comment.filePath === deletedComment.filePath)) return;
+                        this.comments.splice(Math.min(index, this.comments.length), 0, deletedComment);
+                        try { await this.saveCommentsForSingleFile(deletedComment.filePath); }
+                        catch (error) { const restoredIndex = this.comments.indexOf(deletedComment); if (restoredIndex >= 0) this.comments.splice(restoredIndex, 1); throw error; }
+                        this.refreshViews(); this.refreshEditorDecorations();
+                    });
+                    notice.hide(); new Notice('已恢复批注');
+                } catch { undoButton.disabled = false; new Notice('恢复保存失败，请重试'); }
+            };
+        });
     }
 
     async copyBacklink(comment: Comment) {
@@ -3815,16 +4056,23 @@ export default class SideNote extends MindmapPluginBase {
         this.imageHashes = rawData.imageHashes || {};
 
         // Load comments from per-file storage
-        this.comments = await this.loadAllCommentsFromFiles();
+        try { this.comments = await this.loadAllCommentsFromFiles(); }
+        catch (error) {
+            console.error('读取批注数据失败，保留现有批注并自动重试', error);
+            if (this.commentManager) this.scheduleCommentDataReload();
+            else this.initialCommentReloadNeeded = true;
+            this.applyHighlightColor(); return;
+        }
 
         // Migration: if data.json still has comments, migrate them
         if (rawData.comments && rawData.comments.length > 0) {
             const oldComments = rawData.comments;
-            const existingTimestamps = new Set(this.comments.map(c => c.timestamp));
+            const existingIdentities = new Set(this.comments.map(c => JSON.stringify([c.filePath, c.timestamp])));
             let migratedCount = 0;
             for (const oc of oldComments) {
-                if (!existingTimestamps.has(oc.timestamp)) {
-                    this.comments.push(oc);
+                const identity = JSON.stringify([oc.filePath, oc.timestamp]);
+                if (!existingIdentities.has(identity)) {
+                    this.comments.push(oc); existingIdentities.add(identity);
                     migratedCount++;
                 }
             }
@@ -3832,7 +4080,9 @@ export default class SideNote extends MindmapPluginBase {
                 await this.saveAllCommentFiles();
                 new Notice(`已迁移 ${migratedCount} 条批注到独立文件存储。`);
             }
-            // Save data.json without comments
+            // Remove the legacy field from runtime settings too, so future saves
+            // cannot reintroduce deleted or already migrated annotations.
+            delete (this.toolSettings as Partial<PluginData>).comments;
             const cleanData = { ...this.toolSettings, imageHashes: this.imageHashes };
             await super.saveData(cleanData);
         }
@@ -3886,7 +4136,7 @@ export default class SideNote extends MindmapPluginBase {
         try {
             const dataToSave = { ...this.toolSettings, imageHashes: this.imageHashes };
             await super.saveData(dataToSave);
-            await this.saveAllCommentFiles();
+            await this.writeAllCommentFiles();
         } finally {
             this.isSaving = false;
         }

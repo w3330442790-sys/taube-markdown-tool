@@ -101,3 +101,66 @@ test('batch repair leaves genuinely ambiguous duplicate text alone', async () =>
   assert.equal(result.remaining, 1);
   assert.equal(comment.isOrphaned, true);
 });
+
+test('globally unique quote recovers after moving outside its old heading and far from its old offset', async () => {
+  const before = '# A\nUnique quotation\n# B\nOther text\n';
+  const after = '# A\nOther text\n# B\n' + 'padding\n'.repeat(400) + 'Unique quotation\n';
+  const comment = anchored(before, 'Unique quotation', { headingPath: ['A'] });
+  await new CommentManager([comment]).updateCommentCoordinatesForFile(after, 'note.md');
+  assert.equal(comment.isOrphaned, false);
+  assert.equal(comment.absoluteFrom, after.indexOf('Unique quotation'));
+  assert.deepEqual(comment.headingPath, ['B']);
+});
+
+test('unique quote tolerates CRLF, indentation and Unicode whitespace while preserving actual offsets', async () => {
+  const before = 'prefix\nA unique\n  quoted phrase\nsuffix';
+  const after = 'inserted\r\nprefix\r\nA\u00a0unique\r\n\tquoted\u3000phrase\r\nsuffix';
+  const comment = anchored(before, 'A unique\n  quoted phrase');
+  await new CommentManager([comment]).updateCommentCoordinatesForFile(after, 'note.md');
+  assert.equal(comment.isOrphaned, false);
+  assert.equal(comment.absoluteFrom, after.indexOf('A\u00a0unique'));
+  assert.equal(comment.selectedText, 'A\u00a0unique\r\n\tquoted\u3000phrase');
+  assert.equal(comment.absoluteTo, after.indexOf('\r\nsuffix'));
+  assert.equal(comment.startLine, 2);
+  assert.equal(comment.endLine, 3);
+  assert.equal(comment.endChar, '\tquoted\u3000phrase'.length);
+  assert.notEqual(comment.selectedTextHash, 'hash');
+});
+
+test('whitespace-equivalent duplicates remain orphaned even when the old offset points to one', async () => {
+  const before = 'Alpha beta';
+  const after = 'Alpha\tbeta\nAlpha\u00a0beta';
+  const comment = anchored(before, before);
+  await new CommentManager([comment]).updateCommentCoordinatesForFile(after, 'note.md');
+  assert.equal(comment.isOrphaned, true);
+});
+
+test('overlapping whitespace-equivalent occurrences are still ambiguous', async () => {
+  const comment = anchored('A A', 'A A');
+  await new CommentManager([comment]).updateCommentCoordinatesForFile('A\tA\tA', 'note.md');
+  assert.equal(comment.isOrphaned, true);
+});
+
+test('one exact occurrence cannot hide a second whitespace-equivalent occurrence', async () => {
+  const comment = anchored('Alpha beta', 'Alpha beta');
+  await new CommentManager([comment]).updateCommentCoordinatesForFile('Alpha beta\nAlpha\tbeta', 'note.md');
+  assert.equal(comment.isOrphaned, true);
+});
+
+test('whitespace recovery never removes word boundaries or accepts changed letters', async () => {
+  for (const after of ['Alphabeta', 'Alpha zeta']) {
+    const comment = anchored('Alpha beta', 'Alpha beta');
+    await new CommentManager([comment]).updateCommentCoordinatesForFile(after, 'note.md');
+    assert.equal(comment.isOrphaned, true);
+  }
+});
+
+test('folder rename migrates descendants on path boundaries and preserves unrelated paths', () => {
+  const paths = ['folder/a.md', 'folder/nested/b.md', 'folder-other/c.md', 'other/folder/d.md'];
+  const comments = paths.map(filePath => anchored('quote', 'quote', { filePath }));
+  const manager = new CommentManager(comments);
+  manager.renameFile('folder', 'renamed');
+  assert.deepEqual(comments.map(comment => comment.filePath), ['renamed/a.md', 'renamed/nested/b.md', ...paths.slice(2)]);
+  manager.renameFile('renamed/a.md', 'renamed/new.md');
+  assert.equal(comments[0].filePath, 'renamed/new.md');
+});

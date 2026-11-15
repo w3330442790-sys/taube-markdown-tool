@@ -6,6 +6,8 @@ import { TFile, MarkdownView, Platform } from 'obsidian';
 const w = window as any;
 w.notices = [];
 w.setup = async (mobile = false) => {
+    w.plugin?.onunload();
+    w.noticeRecords = [];
     document.body.replaceChildren(); document.body.className = mobile ? 'is-mobile' : '';
     (Platform as any).isMobile = mobile;
     const files = new Map<string, string>(); const writes: string[] = [];
@@ -22,7 +24,7 @@ w.setup = async (mobile = false) => {
         read: async () => text, createFolder: async () => {}, adapter: { exists: async (p: string) => p === 'side-note-data' || files.has(p),
             read: async (p: string) => { if (!files.has(p)) throw Error('missing'); return files.get(p); },
             write: async (p: string, data: string) => { if (w.failWrite) throw Error('simulated disk failure'); writes.push(p); files.set(p, data); },
-            list: async (p: string) => ({ files: Array.from(files.keys()).filter(x => x.startsWith(p + '/')), folders: [] }), remove: async (p: string) => { files.delete(p); } } },
+            list: async (p: string) => ({ files: Array.from(files.keys()).filter(x => x.startsWith(p + '/')), folders: [] }), rename: async (from: string, to: string) => { if (!files.has(from)) throw Error('missing rename source'); if (files.has(to)) throw Error('rename destination exists'); files.set(to, files.get(from)!); files.delete(from); }, remove: async (p: string) => { files.delete(p); } } },
         workspace: { getActiveFile: () => note, getLeaf: () => sourceLeaf, iterateAllLeaves: (fn: any) => { fn(sourceLeaf); },
             getLeavesOfType: () => [{ view: w.view }], setActiveLeaf: () => {}, revealLeaf: async () => {} } };
     const plugin: any = new SideNote(app, { id: 'side-comments-origin' });

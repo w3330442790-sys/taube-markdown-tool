@@ -55,6 +55,7 @@ export function rebindComment(comment: Comment, text: string, from: number, to: 
 export interface Draft {
     key: string; filePath: string; selectedText: string; from: number; to: number; timestamp?: number;
     commentText: string; color: string; markType: NonNullable<Comment['markType']>; updatedAt: number;
+    baseVersion?: string;
 }
 export function draftKey(file: string, quote: string, from: number, to: number, timestamp?: number): string {
     return JSON.stringify(timestamp === undefined ? ['new', file, quote, from, to] : ['edit', file, timestamp]);
@@ -77,6 +78,7 @@ export class DraftStore {
             if (!candidate || typeof candidate !== 'object') return false;
             const d = candidate as Record<string, unknown>;
             return typeof d.key === 'string' && typeof d.filePath === 'string' && typeof d.commentText === 'string' &&
+                (d.baseVersion === undefined || typeof d.baseVersion === 'string') &&
                 typeof d.selectedText === 'string' && typeof d.color === 'string' && typeof d.markType === 'string' &&
                 ['highlight', 'underline', 'strikethrough', 'bold', 'text-color', 'none'].includes(d.markType) &&
                 typeof d.from === 'number' && Number.isFinite(d.from) && typeof d.to === 'number' && Number.isFinite(d.to) &&

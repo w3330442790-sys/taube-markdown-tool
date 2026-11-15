@@ -26,6 +26,7 @@ export class Plugin extends Component {
     app: any; manifest: any;
     constructor(app: any, manifest: any) { super(); this.app = app; this.manifest = manifest; }
     async loadData() { return {}; }
+    onunload() {}
     async saveData(data: any) { await this.app.vault.adapter.write('.obsidian/plugins/side-comments-origin/data.json', JSON.stringify(data)); }
 }
 export class ItemView extends Component {
@@ -41,6 +42,7 @@ export class TextFileView extends ItemView {
     async onClose() {} async onUnloadFile() {} async save() {}
 }
 export class TFile { path: string; extension = 'md'; basename: string; constructor(path: string) { this.path = path; this.basename = path.replace(/\.md$/, ''); } }
+export class TFolder { constructor(public path: string) {} }
 export class Modal {
     containerEl = document.createElement('div') as any; titleEl: any; contentEl: any;
     constructor(public app: any) { this.containerEl.className = 'modal-container'; this.titleEl = this.containerEl.createEl('h2'); this.contentEl = this.containerEl.createDiv('modal-content'); }
@@ -49,7 +51,10 @@ export class Modal {
 }
 export class Notice {
     messageEl = document.createElement('div') as any;
-    constructor(message: any, timeout?: number) { (window as any).notices.push(typeof message === 'string' ? message : 'notice'); }
+    constructor(message: any, timeout?: number) {
+        (window as any).notices.push(typeof message === 'string' ? message : 'notice');
+        ((window as any).noticeRecords ??= []).push({ text: typeof message === 'string' ? message : message.textContent, timeout });
+    }
     hide() {}
 }
 export class Menu {

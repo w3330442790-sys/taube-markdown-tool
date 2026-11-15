@@ -1556,6 +1556,7 @@ body.is-mobile .sidenote-modal-floating {
 .sidenote-navigation span { font-size: 0.8em; color: var(--text-muted); }
 .sidenote-filters button[aria-pressed="true"] { background: var(--interactive-accent); color: var(--text-on-accent); }
 .sidenote-orphan-label { display: block; color: var(--text-warning); font-size: 0.8em; margin-top: 5px; }
+.sidenote-mark-badge.sidenote-orphan-indicator { color: var(--text-muted); background: var(--background-modifier-hover); }
 .sidenote-rebind-bar { background: var(--background-secondary); }
 .sidenote-rebind-bar span { flex-basis: 100%; font-size: 0.85em; }
 .sidenote-save-status { padding: 5px 12px; font-size: 0.8em; color: var(--text-muted); flex-shrink: 0; }

@@ -4,10 +4,14 @@
 
 **2.0.0 起，“融合 Mindmap（personal-mindmap）”完整并入本插件；2.1.0 起，“表格工具（excel-tool）”也完整并入。** 批注、正文拖动、Markdown 工具栏、完整思维导图画布（Markdown 一键切换、`.wmind`、`.xmind`）和安卓友好表格工具只需安装一个插件。旧的 `personal-mindmap`、`excel-tool`／`table-tune` 请停用，数据会自动衔接。
 
-- 当前版本：**2.4.0**（Obsidian 1.8.7 或更新版本）
+- 当前版本：**2.5.0**（Obsidian 1.8.7 或更新版本）
 - 支持：Windows、macOS、Linux，以及 Obsidian 手机／平板端
 - 插件 ID：`taube-markdown-tool`，独立于原社区版更新
 - [下载最新版本](https://github.com/w3330442790-sys/taube-markdown-tool/releases/latest)
+
+## 2.5.0 批注自主修复
+
+定位异常改为一次短提示，卡片保留轻量状态。笔记移动、换行或空格变化后自动重新校验；改名失败、短暂存储故障会后台重试。新增完整路径存储、事务恢复和同步冲突保护，避免旧文件命名碰撞或旧编辑窗口覆盖新内容。歧义位置和正文冲突保留草稿、交由用户确认。详见 [2.5.0 发布说明](RELEASE_NOTES-2.5.0.md)。
 
 ## 2.4.0 平板工具栏与查找结果栏
 

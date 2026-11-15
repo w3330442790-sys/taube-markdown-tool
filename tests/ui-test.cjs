@@ -23,6 +23,191 @@ const server = http.createServer((req, res) => {
   const reset = async (mobile = false) => { await page.evaluate(mobile => { window.failWrite = false; localStorage.clear(); return window.setup(mobile); }, mobile); await page.locator('.sidenote-comment-item').first().waitFor(); };
   try {
     await page.goto(`http://127.0.0.1:${server.address().port}`); await page.waitForFunction(() => window.setup); await reset();
+    await check('orphan warnings are transient and deduplicated while annotation content stays available', async () => {
+      await page.evaluate(() => {
+        const orphan=window.plugin.comments[2];
+        window.plugin.showOrphanNotice([orphan,orphan]);
+        window.plugin.showOrphanNotice([orphan]);
+      });
+      const notices=await page.evaluate(()=>window.noticeRecords);
+      assert.equal(notices.length,1);
+      assert.equal(notices[0].timeout,5000);
+      assert.match(notices[0].text,/内容已保留/);
+      assert.equal(await page.locator('.sidenote-orphan-label').count(),0);
+      assert.equal(await page.locator('.sidenote-orphan-indicator').count(),1);
+      assert.equal(await page.locator('.sidenote-comment-item').count(),4);
+      assert.equal(await page.evaluate(()=>window.plugin.comments[2].isOrphaned),true);
+      await reset();
+    });
+    await check('failed deletion restores the exact annotation and can be retried', async () => {
+      const result=await page.evaluate(async()=>{
+        const before=JSON.stringify(window.plugin.comments);window.failWrite=true;let rejected=false;
+        try{await window.plugin.deleteComment(1);}catch{rejected=true;}
+        const unchanged=JSON.stringify(window.plugin.comments)===before;
+        window.failWrite=false;await window.plugin.deleteComment(1);
+        return {rejected,unchanged,remaining:window.plugin.comments.map(c=>c.timestamp)};
+      });
+      assert.equal(result.rejected,true);assert.equal(result.unchanged,true);assert.deepEqual(result.remaining,[2,3,4]);await reset();
+    });
+    await check('failed orphan repair restores anchors and reports no false success',async()=>{
+      const result=await page.evaluate(async()=>{
+        const target=window.plugin.comments[2];target.selectedText='新选原文';target.absoluteFrom=0;target.absoluteTo=0;
+        const before=JSON.stringify(target);window.failWrite=true;
+        await window.plugin.repairOrphanedComments();
+        const unchanged=JSON.stringify(target)===before;
+        const failedNotice=window.noticeRecords.at(-1).text;
+        window.failWrite=false;await window.plugin.repairOrphanedComments();
+        return {unchanged,failedNotice,repaired:!target.isOrphaned};
+      });
+      assert.equal(result.unchanged,true);assert.match(result.failedNotice,/保存失败/);assert.equal(result.repaired,true);await reset();
+    });
+    await check('folder moves migrate annotation paths without changing similarly prefixed folders',async()=>{
+      const result=await page.evaluate(async()=>{
+        window.plugin.comments[0].filePath='A/note.md';window.plugin.comments[1].filePath='A/sub/note.md';window.plugin.comments[2].filePath='AB/note.md';
+        await window.plugin.handleNoteRename('A','B');
+        return window.plugin.comments.map(c=>c.filePath);
+      });
+      assert.deepEqual(result,['B/note.md','B/sub/note.md','AB/note.md','note.md']);await reset();
+    });
+    await check('automatic revalidation restores unique text during a settings save and retries transient failures',async()=>{
+      await page.evaluate(async()=>{
+        const target=window.plugin.comments[2];target.selectedText='新选原文';target.absoluteFrom=0;target.absoluteTo=0;
+        window.plugin.isSaving=true;window.failWrite=true;window.plugin.scheduleAnchorCheck('note.md');
+        await window.plugin.flushAnchorChecks();
+      });
+      assert.equal(await page.evaluate(()=>window.plugin.comments[2].isOrphaned),true);
+      await page.evaluate(()=>{window.failWrite=false;window.plugin.isSaving=false;});
+      await page.waitForFunction(()=>window.plugin.comments[2].isOrphaned===false);
+      assert.equal(await page.evaluate(()=>window.plugin.comments[2].absoluteFrom),await page.evaluate(()=>window.noteText.indexOf('新选原文')));
+      await reset();
+    });
+    await check('shared legacy filenames migrate into independent recoverable files',async()=>{
+      const result=await page.evaluate(async()=>{
+        const a={...window.plugin.comments[0],filePath:'A/B.md',comment:'first'};
+        const b={...window.plugin.comments[1],filePath:'A__B.md',comment:'second'};
+        window.files.set('side-note-data/A__B.json',JSON.stringify([a,b]));
+        window.plugin.comments=await window.plugin.loadAllCommentsFromFiles();window.plugin.commentManager.updateComments(window.plugin.comments);
+        await window.plugin.saveAllCommentFiles();
+        const paths=[window.plugin.getCommentsJsonPath(a.filePath),window.plugin.getCommentsJsonPath(b.filePath)];
+        return {paths,values:paths.map(p=>JSON.parse(window.files.get(p)).map(c=>c.comment)),legacy:window.files.has('side-note-data/A__B.json')};
+      });
+      assert.notEqual(result.paths[0],result.paths[1]);assert.deepEqual(result.values,[['first'],['second']]);assert.equal(result.legacy,false);await reset();
+    });
+    await check('external annotation updates cannot be overwritten by a stale edit',async()=>{
+      const result=await page.evaluate(async()=>{
+        await window.plugin.saveAllCommentFiles();const path=window.plugin.getCommentsJsonPath('note.md');
+        const remote=JSON.parse(window.files.get(path));remote[0].comment='另一设备的新内容';window.files.set(path,JSON.stringify(remote));
+        let rejected=false;try{await window.plugin.editComment(1,'过期内容');}catch{rejected=true;}
+        const preserved=JSON.parse(window.files.get(path))[0].comment;
+        await window.plugin.refreshCommentData();
+        if(window.plugin.anchorCheckTimer!==null){clearTimeout(window.plugin.anchorCheckTimer);window.plugin.anchorCheckTimer=null;window.plugin.pendingAnchorChecks.clear();}
+        if(window.plugin.commentDataReloadTimer!==null){clearTimeout(window.plugin.commentDataReloadTimer);window.plugin.commentDataReloadTimer=null;}
+        return {rejected,preserved,current:window.plugin.comments[0].comment};
+      });
+      assert.deepEqual(result,{rejected:true,preserved:'另一设备的新内容',current:'另一设备的新内容'});await reset();
+    });
+    await check('resolved or removed pending orphans are never warned about later',async()=>{
+      await page.evaluate(()=>{
+        const target=window.plugin.comments[2];window.plugin.queueOrphanNotice([target]);target.isOrphaned=false;
+      });
+      await page.waitForTimeout(2150);
+      assert.equal(await page.evaluate(()=>window.noticeRecords.length),0);
+      assert.equal(await page.evaluate(()=>window.plugin.orphanNoticeTimer),null);await reset();
+    });
+    await check('an old edit window cannot overwrite a synchronized newer annotation',async()=>{
+      await page.evaluate(async()=>{await window.plugin.saveAllCommentFiles();window.openEdit();});
+      await page.locator('.sidenote-modal-textarea').fill('本地未保存草稿');
+      await page.evaluate(async()=>{
+        const path=window.plugin.getCommentsJsonPath('note.md'),remote=JSON.parse(window.files.get(path));
+        remote[0].comment='已同步的新版本';window.files.set(path,JSON.stringify(remote));await window.plugin.refreshCommentData();
+      });
+      await page.getByRole('button',{name:'保存',exact:true}).click();
+      await page.waitForFunction(()=>document.querySelector('.sidenote-save-status')?.textContent.includes('已有新版本'));
+      assert.equal(await page.locator('.sidenote-modal-textarea').inputValue(),'本地未保存草稿');
+      assert.equal(await page.evaluate(()=>window.plugin.comments[0].comment),'已同步的新版本');
+      assert.equal(await page.evaluate(()=>window.plugin.drafts.list()[0].commentText),'本地未保存草稿');
+      await page.getByLabel('关闭批注窗口',{exact:true}).click();await reset();
+    });
+    await check('temporarily unreadable owned storage never removes in-memory annotations',async()=>{
+      const result=await page.evaluate(async()=>{
+        await window.plugin.saveAllCommentFiles();const path=window.plugin.getCommentsJsonPath('note.md');
+        const before=JSON.stringify(window.plugin.comments),valid=window.files.get(path);window.files.set(path,'{');
+        let rejected=false;try{await window.plugin.refreshCommentData();}catch{rejected=true;}
+        const preserved=JSON.stringify(window.plugin.comments)===before;
+        window.files.set(path,valid);await window.plugin.refreshCommentData();
+        return {rejected,preserved,total:window.plugin.comments.length};
+      });
+      assert.deepEqual(result,{rejected:true,preserved:true,total:4});await reset();
+    });
+    await check('failed note rename retries automatically after the vault has already moved it',async()=>{
+      await page.evaluate(async()=>{
+        const note=window.plugin.app.vault.getAbstractFileByPath('note.md');note.path='renamed.md';
+        window.plugin.app.vault.getAbstractFileByPath=path=>path==='renamed.md'?note:null;
+        window.failWrite=true;try{await window.plugin.handleNoteRename('note.md','renamed.md');}catch{}
+      });
+      assert.equal(await page.evaluate(()=>window.plugin.comments[0].filePath),'note.md');
+      await page.evaluate(()=>window.failWrite=false);
+      await page.waitForFunction(()=>window.plugin.comments.every(c=>c.filePath==='renamed.md'));
+      assert.equal(await page.evaluate(()=>window.plugin.pendingNoteRenames.size),0);await reset();
+    });
+    await check('a partial multi-file refresh never advances any disk baseline',async()=>{
+      const result=await page.evaluate(async()=>{
+        window.plugin.comments[0].filePath='first.md';window.plugin.comments[1].filePath='second.md';
+        await window.plugin.saveAllCommentFiles();
+        const a=window.plugin.getCommentsJsonPath('first.md'),b=window.plugin.getCommentsJsonPath('second.md');
+        const remote=JSON.parse(window.files.get(a));remote[0].comment='远端新版本';window.files.set(a,JSON.stringify(remote));window.files.set(b,'{');
+        let refreshRejected=false,editRejected=false;
+        try{await window.plugin.refreshCommentData();}catch{refreshRejected=true;}
+        try{await window.plugin.editComment(1,'旧基线覆盖');}catch{editRejected=true;}
+        return {refreshRejected,editRejected,preserved:JSON.parse(window.files.get(a))[0].comment};
+      });
+      assert.deepEqual(result,{refreshRejected:true,editRejected:true,preserved:'远端新版本'});await reset();
+    });
+    await check('moving an old parent folder never captures a note already moved by a pending rename',async()=>{
+      const paths=await page.evaluate(async()=>{
+        window.plugin.comments[0].filePath='A/note.md';window.plugin.comments[1].filePath='A/other.md';
+        window.failWrite=true;try{await window.plugin.handleNoteRename('A/note.md','B/note.md');}catch{}
+        window.failWrite=false;await window.plugin.handleNoteRename('A','C');await window.plugin.retryPendingNoteRenames();
+        return window.plugin.comments.slice(0,2).map(c=>c.filePath);
+      });
+      assert.deepEqual(paths,['B/note.md','C/other.md']);await reset();
+    });
+    await check('batch orphan deletion restores content on storage failure',async()=>{
+      const result=await page.evaluate(async()=>{
+        const before=JSON.stringify(window.plugin.comments);window.failWrite=true;let rejected=false;
+        try{await window.plugin.deleteOrphanedComments();}catch{rejected=true;}
+        window.failWrite=false;return {rejected,preserved:JSON.stringify(window.plugin.comments)===before};
+      });
+      assert.deepEqual(result,{rejected:true,preserved:true});await reset();
+    });
+    await check('persisted rename intents survive an initially unavailable annotation library',async()=>{
+      await page.evaluate(async()=>{
+        await window.plugin.saveAllCommentFiles();window.failWrite=true;
+        try{await window.plugin.handleNoteRename('note.md','renamed.md');}catch{}
+        window.failWrite=false;window.plugin.comments.splice(0);window.plugin.commentDataLoaded=false;
+        window.plugin.loadedCommentPaths.clear();window.plugin.loadedCommentContents.clear();
+        window.plugin.pendingNoteRenames.clear();window.plugin.loadPendingNoteRenames();
+        await window.plugin.saveToolData();
+        await window.plugin.retryPendingNoteRenames();
+      });
+      assert.equal(await page.evaluate(()=>window.plugin.pendingNoteRenames.size),1);
+      await page.evaluate(()=>window.plugin.refreshCommentData());
+      await page.waitForFunction(()=>window.plugin.comments.length===4&&window.plugin.comments.every(c=>c.filePath==='renamed.md'));
+      await reset();
+    });
+    await check('queued rename retries use the latest pending destination',async()=>{
+      const path=await page.evaluate(async()=>{
+        window.plugin.comments[0].filePath='A/note.md';window.failWrite=true;
+        try{await window.plugin.handleNoteRename('A/note.md','B/note.md');}catch{}
+        window.failWrite=false;
+        let release;await new Promise(entered=>{void window.plugin.enqueueMutation(()=>new Promise(done=>{release=done;entered();}));});
+        const save=window.plugin.saveToolData.bind(window.plugin);let calls=0;
+        window.plugin.saveToolData=async()=>{if(calls++===0)throw Error('transient move failure');await save();};
+        const move=window.plugin.handleNoteRename('B','C'),retry=window.plugin.retryPendingNoteRenames();release();
+        await Promise.allSettled([move,retry]);return window.plugin.comments[0].filePath;
+      });
+      assert.equal(path,'C/note.md');await reset();
+    });
     await check('Android annotation header keeps search visible while secondary tools are collapsed', async () => {
       await reset(true);
       await page.evaluate(() => { window.view.containerEl.style.width = '320px'; });
@@ -242,7 +427,7 @@ const server = http.createServer((req, res) => {
         await window.plugin.saveCommentsForSingleFile('note.md');
         window.plugin.comments.splice(0);
         await window.plugin.saveToolData();
-        return window.files.has('side-note-data/note.json');
+        return window.files.has(window.plugin.getCommentsJsonPath('note.md'));
       });
       assert.equal(exists, false);
     });
