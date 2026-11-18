@@ -1,4 +1,29 @@
 import { generateHash } from "./hash";
+import type { ChangeDesc } from '@codemirror/state';
+
+/** Fingerprint of the verified source version; never use offsets across versions without evidence. */
+export function sourceFingerprint(text:string):string {
+    let a=2166136261,b=3335557771;
+    for(let i=0;i<text.length;i++){const c=text.charCodeAt(i);a=Math.imul(a^c,16777619);b=Math.imul(b^c,2246822519);}
+    return `${text.length}:${(a>>>0).toString(36)}:${(b>>>0).toString(36)}`;
+}
+
+/** Map only an intact quote from the actual transaction's old document. */
+export function mapCommentChange(comment:Comment,before:string,after:string,changes:ChangeDesc):boolean {
+    const from=comment.absoluteFrom,to=comment.absoluteTo;
+    if(comment.anchorSourceFingerprint&&comment.anchorSourceFingerprint!==sourceFingerprint(before))return false;
+    if(comment.isOrphaned||typeof from!=='number'||typeof to!=='number'||from<0||to>before.length||from>=to||before.slice(from,to)!==comment.selectedText)return false;
+    let touched=false;
+    changes.iterChangedRanges((a,b)=>{if(a<b&&a<to&&b>from||a===b&&a>from&&a<to)touched=true;});
+    if(touched)return false;
+    const start=changes.mapPos(from,1),end=changes.mapPos(to,-1);
+    if(start>=end||after.slice(start,end)!==comment.selectedText)return false;
+    const position=(offset:number)=>{const lines=after.slice(0,offset).split('\n');return {line:lines.length-1,ch:lines[lines.length-1].length};};
+    const a=position(start),b=position(end);
+    Object.assign(comment,{absoluteFrom:start,absoluteTo:end,startLine:a.line,startChar:a.ch,endLine:b.line,endChar:b.ch,
+        contextBefore:after.slice(Math.max(0,start-50),start),contextAfter:after.slice(end,end+50),anchorSourceFingerprint:sourceFingerprint(after),isOrphaned:false});
+    return true;
+}
 
 export interface Comment {
     filePath: string;
@@ -10,6 +35,7 @@ export interface Comment {
     // 绝对偏移量：比行列更适合在文档变动后追踪位置
     absoluteFrom?: number;
     absoluteTo?: number;
+    anchorSourceFingerprint?: string;
 
     selectedText: string;
     selectedTextHash: string;
@@ -159,12 +185,16 @@ export class CommentManager {
      */
     async updateCommentCoordinatesForFile(fileContent: string, filePath: string): Promise<void> {
         const fileComments = this.comments.filter(comment => comment.filePath === filePath);
+        const fingerprint=sourceFingerprint(fileContent);
 
         for (const comment of fileComments) {
             const selectedText = comment.selectedText || "";
             if (!selectedText) {
                 comment.isOrphaned = true;
                 continue;
+            }
+            if(!comment.isOrphaned&&comment.anchorSourceFingerprint===fingerprint&&this.isOffsetMatch(fileContent,comment)){
+                this.applyMatch(comment,fileContent,comment.absoluteFrom!,selectedText);continue;
             }
 
             // Moving same-labelled branches can leave the old offset pointing to a
@@ -322,6 +352,7 @@ export class CommentManager {
         comment.absoluteTo = index + text.length;
         comment.selectedText = text;
         comment.isOrphaned = false;
+        comment.anchorSourceFingerprint=sourceFingerprint(content);
         // Refresh every anchor after a successful match so future edits do not
         // compare against stale context and orphan the comment again.
         comment.contextBefore = content.slice(Math.max(0, index - 50), index);

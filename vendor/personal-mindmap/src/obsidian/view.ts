@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { App } from '../../webview/src/App';
 import { parse, serialize } from '../core/doc';
 import type { MindDoc, Topic } from '../core/types';
-import { parseMarkdownDoc, writeMarkdownDoc } from '../fusion/markdown';
+import { parseMarkdownDoc, syncMarkdownDoc, restoreMarkdownMetadata, migrateMarkdownMetadata, type SourceSpan } from '../fusion/markdown';
 import { SnapshotWriter } from '../fusion/persistence';
 import { scopeHost } from '../fusion/lifetime';
 import type { Host, HostCommand, InMsg, OutMsg } from '../../webview/src/host';
@@ -32,6 +32,10 @@ export class WmindView extends TextFileView {
   private pendingSubpath:string|null=null;
   private mountedPath='';
   private mountGeneration=0;
+  private editQueue:Promise<void>=Promise.resolve();
+  private markdownSaveTask:Promise<void>|null=null;
+  private mapBaseline='null';
+  private pendingMarkdown:{source:string;doc:MindDoc;spans:SourceSpan[];before:string;legacySource?:string}|null=null;
   protected readonly host:Host={
     openTag:tag=>this.plugin.canvasHost(()=>this.file?.path??'',this).openTag?.(tag),
     hoverLink:(event,target,element)=>this.plugin.canvasHost(()=>this.file?.path??'',this,this).hoverLink?.(event,target,element),
@@ -87,16 +91,17 @@ export class WmindView extends TextFileView {
   getDisplayText():string{return this.file?.basename??'思维导图';}
   getIcon():string{return 'brain-circuit';}
   async onOpen():Promise<void>{this.contentEl.addClass('wm-root','wm-obsidian');}
-  async onClose():Promise<void>{this.command('flush');await this.save();if(this.conflict)await this.recoverConflict();await super.onClose();this.unmount();}
-  async onUnloadFile(file:TFile):Promise<void>{this.command('flush');await this.save();if(this.conflict)await this.recoverConflict();return super.onUnloadFile(file);}
+  async onClose():Promise<void>{this.command('flush');await this.save();if(this.conflict||this.pendingMarkdown)await this.recoverConflict();await super.onClose();this.unmount();}
+  async onUnloadFile(file:TFile):Promise<void>{this.command('flush');await this.save();if(this.conflict||this.pendingMarkdown)await this.recoverConflict();return super.onUnloadFile(file);}
   protected decode(source:string):MindDoc {
-    if(this.markdownMode){const doc=parseMarkdownDoc(source,this.file?.basename??'思维导图',this.plugin.rootRule());this.sourceReadOnly=parse(serialize(doc)).readOnly;return doc;}
+    if(this.markdownMode){const record=this.file?this.plugin.markdownMaps?.get(this.file.path):undefined;this.mapBaseline=JSON.stringify(record??null);const doc=restoreMarkdownMetadata(source,this.file?.basename??'思维导图',record,this.plugin.rootRule());this.sourceReadOnly=parse(serialize(doc)).readOnly;return doc;}
     const parsed=parse(source);this.sourceReadOnly=parsed.readOnly||!parsed.doc;if(!parsed.doc)throw new Error(parsed.error?.message??'无法解析脑图');return parsed.doc;
   }
   setViewData(source:string,clear:boolean):void {
     if(!clear&&source===this.lastText&&this.root)return;
     if(!clear&&this.writer?.isOwnSnapshot(source))return;
-    if(this.writer&&(this.writer.pending!==undefined||this.writer.isDirty(this.lastText))&&!clear){this.conflict=true;new Notice('磁盘内容在编辑期间发生变化；本地修改已保留，未覆盖磁盘。');void this.recoverConflict();return;}
+    if(this.writer&&(this.pendingMarkdown||this.writer.pending!==undefined||this.writer.isDirty(this.lastText))&&!clear){this.conflict=true;new Notice('磁盘内容在编辑期间发生变化；本地修改已保留，未覆盖磁盘。');void this.recoverConflict();return;}
+    if(clear&&this.writerFile!==this.file)this.pendingMarkdown=null;
     this.lastText=source;this.data=source;this.conflict=false;
     const file=this.file;this.writerFile=file;
     this.writer=file?new SnapshotWriter(source,transform=>this.app.vault.process(file,transform)):null;
@@ -105,26 +110,46 @@ export class WmindView extends TextFileView {
     else this.emit({type:'update',text:this.currentDoc?serialize(this.currentDoc):source});
   }
   getViewData():string{return this.lastText;}
-  clear():void{this.lastText='';this.currentDoc=null;this.writer=null;this.writerFile=null;this.sourceReadOnly=false;this.conflict=false;this.recoverySaved='';this.unmount();}
-  async refreshFromSettings():Promise<void>{this.command('flush');await this.save();if(!this.conflict)this.setViewData(this.lastText,true);}
+  clear():void{this.lastText='';this.currentDoc=null;this.writer=null;this.writerFile=null;this.pendingMarkdown=null;this.sourceReadOnly=false;this.conflict=false;this.recoverySaved='';this.unmount();}
+  async refreshFromSettings():Promise<void>{this.command('flush');await this.save();if(!this.conflict&&!this.pendingMarkdown)this.setViewData(this.lastText,true);}
   /** Vault.process serializes writes and checks the exact last successful disk snapshot. */
   async save(_clear?:boolean):Promise<void>{
     this.command('syncPending');
+    await this.editQueue;
+    await this.saveSnapshot();
+  }
+  private async saveSnapshot():Promise<void>{
     if(!this.writer||!this.file||this.writerFile!==this.file||this.sourceReadOnly)return;
     if(this.conflict){await this.recoverConflict();return;}
+    if(this.markdownMode&&this.pendingMarkdown){
+      if(this.markdownSaveTask){await this.markdownSaveTask;return;}
+      const pending=this.pendingMarkdown,file=this.file,writer=this.writer;
+      this.markdownSaveTask=(async()=>{try{
+        // Store the full graph first. A failed metadata write cannot damage source text.
+        await this.plugin.markdownMaps.set(file.path,{source:pending.source,doc:pending.doc,...(pending.legacySource?{legacySource:pending.legacySource}:{})},this.mapBaseline);
+        this.mapBaseline=JSON.stringify(this.plugin.markdownMaps.get(file.path)??null);
+        const commit=async(guard?:()=>void)=>{if(pending.before!==pending.source)await writer.write(pending.source,guard);};
+        if(this.plugin.commitMarkdownSync)await this.plugin.commitMarkdownSync(file.path,pending.before,pending.source,pending.spans,commit);else await commit();
+        if(this.pendingMarkdown===pending)this.pendingMarkdown=null;
+      }catch(error){new Notice(`脑图同步未完成，编辑仍保留，可再次保存：${String(error)}`);}})();
+      try{await this.markdownSaveTask;}finally{this.markdownSaveTask=null;}
+      return;
+    }
+    if(this.markdownMode&&!this.writer.isDirty(this.lastText))return;
     try{await this.writer.write(this.lastText);}catch(error){this.conflict=true;new Notice((error as Error).message);await this.recoverConflict();}
   }
   async saveConflictCopy():Promise<void>{
     const file=this.file;if(!file)return;
-    const path=await this.app.fileManager.getAvailablePathForAttachment(`${file.basename} 本地冲突副本.${file.extension}`,file.path);
-    const copy=await this.app.vault.create(path,this.lastText);new Notice(`本地版本已保存：${copy.path}`);
+    const path=await this.app.fileManager.getAvailablePathForAttachment(`${file.basename} 本地冲突副本.${this.markdownMode?'wmind':file.extension}`,file.path);
+    const copy=await this.app.vault.create(path,this.markdownMode&&this.currentDoc?serialize(this.currentDoc):this.lastText);new Notice(`本地版本已保存：${copy.path}`);
   }
   private async recoverConflict():Promise<void>{
     if(this.recoveryTask){await this.recoveryTask;return this.recoverConflict();}
-    if(!this.file||this.recoverySaved===this.lastText)return;
-    const file=this.file,source=this.lastText;
+    if(!this.file)return;
+    const file=this.file,source=this.markdownMode&&this.currentDoc?serialize(this.currentDoc):this.lastText;
+    if(this.recoverySaved===source)return;
     this.recoveryTask=(async()=>{try{
-      const path=await this.app.fileManager.getAvailablePathForAttachment(`${file.basename} 本地冲突副本.${file.extension}`,file.path);
+      const path=await this.app.fileManager.getAvailablePathForAttachment(`${file.basename} 本地冲突副本.${this.markdownMode?'wmind':file.extension}`,file.path);
       const copy=await this.app.vault.create(path,source);this.recoverySaved=source;new Notice(`本地版本已自动保存：${copy.path}`);
     }catch(error){new Notice(`无法保存冲突副本：${(error as Error).message}；本地内容仍保留在当前视图。`);}})();
     await this.recoveryTask;this.recoveryTask=null;
@@ -146,28 +171,37 @@ export class WmindView extends TextFileView {
   protected emit(m:InMsg):void{for(const handler of this.listeners)handler(m);}
   command(command:HostCommand):boolean{this.emit({type:'command',command});return false;}
   protected async onMessage(m:OutMsg):Promise<void>{
+    if(m.type==='edit'){
+      const file=this.file,generation=this.mountGeneration;
+      const task=this.editQueue.then(()=>{if(file===this.file&&generation===this.mountGeneration)return this.applyEdit(m.text);});
+      this.editQueue=task.catch(error=>{new Notice(String(error));this.emit({type:'update',text:this.currentDoc?serialize(this.currentDoc):this.lastText});});await this.editQueue;return;
+    }
     switch(m.type){
       case 'ready':{
+        if(this.markdownMode&&this.currentDoc){const migration=migrateMarkdownMetadata(this.lastText,this.file?.basename);if(migration){this.pendingMarkdown={source:migration.text,doc:migration.doc,spans:migration.spans,before:this.lastText,legacySource:this.lastText};this.lastText=migration.text;this.data=migration.text;this.currentDoc=migration.doc;await this.save();}}
         this.emit({type:'init',text:this.currentDoc?serialize(this.currentDoc):this.lastText,lang:moment.locale(),fileName:this.file?.basename??'mindmap',host:'obsidian'});
         if(Array.isArray(this.currentDoc?.fusionWarnings))for(const warning of this.currentDoc.fusionWarnings)if(typeof warning==='string')new Notice(warning);
         if(this.pendingSubpath){const subpath=this.pendingSubpath;this.pendingSubpath=null;this.revealSubpath(subpath);}
         return;
-      }
-      case 'edit':{
-        if(this.sourceReadOnly){new Notice('源文件无效或使用未来版本，当前视图不可写入');return;}
-        if(this.file&&this.plugin.isLocked(this.file.path))return;
-        const parsed=parse(m.text);if(!parsed.doc||parsed.readOnly){new Notice('无效或未来版本的脑图不可写入');return;}
-        if(this.conflict){new Notice('文件冲突尚未解决，请保存本地副本后重新打开原文件。');return;}
-        this.currentDoc=parsed.doc;
-        this.lastText=this.markdownMode?writeMarkdownDoc(this.lastText,parsed.doc,this.file?.basename??'思维导图',this.plugin.rootRule()):m.text;
-        if(this.markdownMode)this.currentDoc=this.decode(this.lastText);
-        this.data=this.lastText;if(this.plugin.settings?.saveImmediately===false)this.requestSave();else await this.save();return;
       }
       case 'openLink':this.openLink(m.target);return;
       case 'export':await this.exportFile(m.defaultName,m.data,m.encoding,m.note,m.copy);return;
       case 'notify':new Notice(m.message);return;
       case 'openText':if(this.file&&this.markdownMode)await this.plugin.openAsMarkdown(this.file,this.leaf);return;
     }
+  }
+  private async applyEdit(text:string):Promise<void>{
+        if(this.sourceReadOnly){new Notice('源文件无效或使用未来版本，当前视图不可写入');return;}
+        if(this.file&&this.plugin.isLocked(this.file.path))return;
+        const parsed=parse(text);if(!parsed.doc||parsed.readOnly){new Notice('无效或未来版本的脑图不可写入');return;}
+        if(this.conflict){new Notice('文件冲突尚未解决，请保存本地副本后重新打开原文件。');return;}
+        if(this.markdownMode&&this.currentDoc){
+          if(this.pendingMarkdown){await this.saveSnapshot();if(this.pendingMarkdown){new Notice('请先重试保存上一笔脑图修改。');return;}}
+          const before=this.lastText;const result=syncMarkdownDoc(before,this.currentDoc,parsed.doc,this.file?.basename??'思维导图',this.plugin.rootRule());
+          this.pendingMarkdown={source:result.text,doc:result.doc,spans:result.spans,before};
+          this.lastText=result.text;this.currentDoc=result.doc;
+        }else{this.currentDoc=parsed.doc;this.lastText=text;}
+        this.data=this.lastText;if(!this.markdownMode&&this.plugin.settings?.saveImmediately===false)this.requestSave();else await this.saveSnapshot();
   }
   protected openLink(target:string):void{
     if(/^(https?:|mailto:|obsidian:)/i.test(target)){window.open(target,'_blank');return;}

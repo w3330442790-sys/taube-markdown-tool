@@ -1,7 +1,7 @@
 import type { MindDoc, Topic, Range, Structure } from '../core/types';
-import { parseMarkdown, serializeMarkdown, normalizeKinds, convertLevelKind, markerText, frontmatterValue, setFrontmatterValue, type ParseOptions } from '../../vendor/gogoga/src/markdown';
+import { parseMarkdown, serializeMarkdown, normalizeKinds, convertLevelKind, markerText, frontmatterValue, setFrontmatterValue, splitMarker, splitBlockId, type ParseOptions } from '../../vendor/gogoga/src/markdown';
 import { createNode, type MindDoc as MarkdownDoc, type MindNode } from '../../vendor/gogoga/src/model';
-import { preserveFormat } from '../../vendor/gogoga/src/merge';
+import { preserveFormat, matchLines } from '../../vendor/gogoga/src/merge';
 
 export type MarkdownFusionOptions = Omit<ParseOptions, 'lines' | 'fallbackTitle'>;
 type SourceNode = Partial<Omit<MindNode, 'parent' | 'children'>>;
@@ -300,4 +300,208 @@ export function writeMarkdownDoc(source: string, doc: MindDoc, title: string, op
   const portable = JSON.stringify({doc, canonical: next, identities}, (key, value) => key === 'markdown' ? undefined : value);
   const newline = source.includes('\r\n') ? '\r\n' : '\n';
   return merged.trimEnd() + newline + '<!-- wmind-fusion:v1 ' + encodeURIComponent(portable) + ' -->' + newline;
+}
+
+export interface SourceSpan { from: number; to: number; target: number }
+
+/** Only a valid legacy envelope proves that recognized syntax was plugin metadata. */
+export function migrateMarkdownMetadata(source:string,title=''): {text:string;doc:MindDoc;spans:SourceSpan[]}|null {
+  const legacy=extension(source);if(!legacy.saved||!legacy.identities)return null;
+  const original=parseMarkdownDoc(source,title);
+  const markerLines=new Map<number,string>();
+  for(const node of topics(original)){
+    const meta=node.markdown as SourceNode&{sourceLine?:number};
+    if(meta?.sourceLine===undefined||!meta.anchor||!legacy.identities[meta.anchor])continue;
+    markerLines.set(meta.sourceLine,meta.anchor);
+    if(meta.kind==='heading')markerLines.set(meta.sourceLine+1,meta.anchor);
+  }
+  const match=EXT.exec(source)!;const commentStart=match.index+match[0].indexOf('<!--');
+  const body=source.slice(0,commentStart);let text='';const spans:SourceSpan[]=[];
+  let offset=0,lineNo=0;
+  for(const raw of body.match(/[^\n]*\n|[^\n]+$/g)??[]){
+    const line=raw.replace(/\r?\n$/,'');const ending=raw.slice(line.length);
+    const block=splitBlockId(line);const split=splitMarker(block.text);
+    let next=raw;
+    if(split.marker.anchor&&markerLines.get(lineNo)===split.marker.anchor){
+      next=split.text.trim()?split.text+(block.blockId?' ^'+block.blockId:'')+ending:'';
+    }
+    spans.push(...copiedSpans(raw,next,offset,text.length));text+=next;offset+=raw.length;lineNo++;
+  }
+  const parsed=parseMarkdownDoc(text,title||original.root.text);
+  const a=topics(parsed),b=topics(original);
+  if(a.length!==b.length||a.some((n,i)=>n.text!==b[i].text||(n.note??'')!==(b[i].note??'')))throw Error('旧脑图标记不能安全迁移，已保留原文');
+  const doc=copy(original);const dest=topics(doc);for(let i=0;i<a.length;i++)dest[i].markdown=a[i].markdown;
+  doc.markdown=parsed.markdown;
+  return {text,doc,spans};
+}
+
+/** Markdown content is authoritative; the sidecar supplies stable identities and graph-only fields. */
+export function restoreMarkdownMetadata(source:string,title:string,record:{source:string;doc:MindDoc}|undefined,options:MarkdownFusionOptions={}):MindDoc {
+  const fresh=parseMarkdownDoc(source,title,options);if(!record)return fresh;
+  const prior=topics(record.doc),current=topics(fresh);
+  if(record.source===source&&prior.length===current.length){
+    const result=copy(record.doc),dest=topics(result);for(let i=0;i<dest.length;i++)dest[i].markdown=current[i].markdown;
+    result.markdown=fresh.markdown;return result;
+  }
+  const a=record.source.split('\n'),b=source.split('\n');
+  const pairs=matchLines(a,b);const lines=new Map<number,number>();let pa=0,pb=0;
+  for(const [ai,bi]of [...pairs,[a.length,b.length] as [number,number]]){
+    if(ai-pa===bi-pb)for(let i=0;i<ai-pa;i++)lines.set(pa+i,pb+i);
+    if(ai<a.length)lines.set(ai,bi);pa=ai+1;pb=bi+1;
+  }
+  const used=new Set<string>();
+  const signature=(n:Topic):string=>JSON.stringify([n.text,n.note??'',(n.children??[]).map(signature)]);
+  for(const topic of current){
+    const line=(topic.markdown as {sourceLine?:number})?.sourceLine;
+    const unique=(test:(n:Topic)=>boolean)=>{const found=prior.filter(n=>!used.has(n.id)&&test(n));return found.length===1&&current.filter(test).length===1?found[0]:undefined;};
+    let old=topic.blockId?unique(n=>n.blockId===topic.blockId):undefined;
+    old??=unique(n=>signature(n)===signature(topic));
+    old??=unique(n=>n.text===topic.text);
+    if(topic===fresh.root)old=record.doc.root;
+    if(!old&&!prior.some(n=>n.text===topic.text))old=prior.find(n=>!used.has(n.id)&&!current.some(c=>c.text===n.text)&&line!==undefined&&lines.get((n.markdown as {sourceLine:number})?.sourceLine)===line);
+    if(!old)continue;
+    used.add(old.id);
+    const {text:_text,note:_note,children:_children,markdown:_markdown,blockId:_block,...extra}=old;
+    Object.assign(topic,extra);
+  }
+  const {root:_root,floating:_floating,markdown:_markdown,...extra}=record.doc;
+  Object.assign(fresh,extra);
+  const floatingIds=new Set(record.doc.floating?.map(n=>n.id));
+  const floating:Topic[]=[];
+  const detachFloating=(parent:Topic)=>{
+    parent.children=parent.children?.filter(child=>{if(floatingIds.has(child.id)&&used.has(child.id)){floating.push(child);return false;}detachFloating(child);return true;});
+  };
+  detachFloating(fresh.root);
+  if(floating.length)fresh.floating=floating;
+  const live=new Set(current.map(n=>n.id));
+  fresh.relationships=fresh.relationships?.filter(r=>live.has(r.from)&&live.has(r.to));
+  for(const n of current)for(const key of ['boundaries','summaries'] as const)n[key]=n[key]?.filter(r=>live.has(r.from)&&live.has(r.to));
+  if(used.size<prior.length)fresh.fusionRecovery=record.doc.fusionRecovery??{...record.doc,fusionRecovery:undefined};
+  return fresh;
+}
+export function mapSyncRange(spans: SourceSpan[], from: number, to: number): {from:number;to:number}|null {
+  const sorted=spans.filter(s=>s.to>from&&s.from<to).sort((a,b)=>a.from-b.from);
+  let cursor=from,delta:number|undefined;
+  for(const span of sorted){
+    if(span.from>cursor)return null;
+    const shift=span.target-span.from;
+    if(delta!==undefined&&delta!==shift)return null;
+    delta=shift;cursor=Math.max(cursor,span.to);if(cursor>=to)return {from:from+delta,to:to+delta};
+  }
+  return null;
+}
+const topics=(doc:MindDoc):Topic[]=>{
+  const walk=(n:Topic):Topic[]=>[n,...(n.children??[]).flatMap(walk)];
+  return [doc.root,...(doc.floating??[])].flatMap(walk);
+};
+/** Copied ranges within a known node, including unchanged portions of an edited line. */
+function copiedSpans(before:string,after:string,from:number,target:number):SourceSpan[]{
+  const a=before.match(/[^\n]*\n|[^\n]+$/g)??[],b=after.match(/[^\n]*\n|[^\n]+$/g)??[];
+  const starts=(lines:string[])=>{let n=0;return lines.map(s=>{const at=n;n+=s.length;return at;});};
+  const aa=starts(a),bb=starts(b),spans:SourceSpan[]=[];
+  let pa=0,pb=0;
+  for(const [ai,bi]of [...matchLines(a,b),[a.length,b.length] as [number,number]]){
+    if(ai-pa===bi-pb)for(let k=0;k<ai-pa;k++){
+      const x=a[pa+k],y=b[pb+k];let head=0,tail=0;
+      while(head<Math.min(x.length,y.length)&&x[head]===y[head])head++;
+      while(tail<Math.min(x.length,y.length)-head&&x[x.length-1-tail]===y[y.length-1-tail])tail++;
+      if(head)spans.push({from:from+aa[pa+k],to:from+aa[pa+k]+head,target:target+bb[pb+k]});
+      if(tail)spans.push({from:from+aa[pa+k]+x.length-tail,to:from+aa[pa+k]+x.length,target:target+bb[pb+k]+y.length-tail});
+    }
+    if(ai<a.length)spans.push({from:from+aa[ai],to:from+aa[ai]+a[ai].length,target:target+bb[bi]});
+    pa=ai+1;pb=bi+1;
+  }
+  return spans;
+}
+
+/** Write content using the original node-owned source slices, never graphical markers. */
+export function syncMarkdownDoc(source:string,previous:MindDoc,doc:MindDoc,title:string,options:MarkdownFusionOptions={}):{text:string;doc:MindDoc;spans:SourceSpan[]} {
+  const content=(n:Topic):unknown=>[n.id,n.text,n.note??'',n.blockId??'',(n.markdown as SourceNode|undefined)?.kind,(n.markdown as SourceNode|undefined)?.level,(n.children??[]).map(content)];
+  const projection=(d:MindDoc)=>JSON.stringify([content(d.root),(d.floating??[]).map(content)]);
+  if(projection(previous)===projection(doc)){
+    const next=copy(doc),prior=new Map(topics(previous).map(n=>[n.id,n]));
+    for(const n of topics(next))n.markdown=prior.get(n.id)?.markdown;
+    next.markdown=previous.markdown;
+    return {text:source,doc:next,spans:source?[{from:0,to:source.length,target:0}]:[]};
+  }
+  const nl=source.includes('\r\n')?'\r\n':'\n';
+  const lines=source.match(/[^\n]*\n|[^\n]+$/g)??[];
+  const offsets:number[]=[];let size=0;for(const line of lines){offsets.push(size);size+=line.length;}offsets.push(size);
+  const old=topics(previous).filter(n=>typeof (n.markdown as {sourceLine?:number})?.sourceLine==='number')
+    .sort((a,b)=>(a.markdown as {sourceLine:number}).sourceLine-(b.markdown as {sourceLine:number}).sourceLine);
+  const slices=new Map(old.map((n,i)=>{const start=offsets[(n.markdown as {sourceLine:number}).sourceLine];const end=i+1<old.length?offsets[(old[i+1].markdown as {sourceLine:number}).sourceLine]:source.length;return [n.id,{node:n,start,raw:source.slice(start,end)}] as const;}));
+  const prepared=copy(doc);
+  const inferKinds=(parent:Topic)=>{
+    for(const child of parent.children??[]){
+      if(!(child.markdown as SourceNode|undefined)?.kind){
+        const sibling=parent.children?.find(n=>n.id!==child.id&&(n.markdown as SourceNode|undefined)?.kind);
+        child.markdown={...(child.markdown as SourceNode|undefined),kind:(sibling?.markdown as SourceNode|undefined)?.kind??(options.headingsOnly?'heading':'list')};
+      }
+      inferKinds(child);
+    }
+  };
+  inferKinds(prepared.root);
+  const tree=toMarkdownTree(prepared,title,options);
+  const nodes:MindNode[]=[];const visit=(n:MindNode)=>{nodes.push(n);n.children.forEach(visit);};visit(tree.root);
+  const current=new Map(topics(doc).map(n=>[n.id,n]));
+  const synthetic=!(previous.markdown as SourceDoc)?.rootFromHeading;
+  let text=source.slice(0,old.length?slices.get(old[0].id)!.start:source.length);
+  const originalPrefix=text;
+  if(synthetic&&(previous.root.note??'')!==(doc.root.note??'')){
+    const fm=/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/.exec(text)?.[0].length??0;
+    const oldNote=(previous.root.note??'').replace(/\r?\n/g,nl),note=(doc.root.note??'').replace(/\r?\n/g,nl);
+    const at=oldNote?text.indexOf(oldNote,fm):fm;
+    if(at<0)throw Error('无法安全定位引言段落，原文未改动。');
+    text=text.slice(0,at)+note+text.slice(at+oldNote.length);
+    if(!oldNote&&note&&old.length&&!text.endsWith('\n'))text+=nl;
+  }
+  const spans:SourceSpan[]=copiedSpans(originalPrefix,text,0,0);
+  const rendered:Topic[]=[];
+  for(const n of nodes){
+    if(n===tree.root&&synthetic)continue;
+    const topic=current.get(n.id)!;const saved=slices.get(n.id);
+    const ws=n.kind==='list'?tree.style.indent.repeat((()=>{let depth=0,p=n.parent;while(p?.kind==='list'){depth++;p=p.parent;}return depth;})()):'';
+    const prefix=n.kind==='heading'?'#'.repeat(n.level)+' ':ws+(n.bullet||tree.style.bullet)+' ';
+    let raw:string;
+    if(saved){
+      const pieces=saved.raw.match(/[^\n]*\n|[^\n]+$/g)??[];
+      const first=pieces[0]??'';const header=first.replace(/\r?\n$/,'');const ending=first.slice(header.length);
+      const found=/^(?:#{1,6}[ \t]*|[ \t]*(?:[-*+]|\d+[.)])[ \t]+)/.exec(header);
+      if(!found||!header.slice(found[0].length).startsWith(saved.node.text))throw new Error('无法安全同步此节点，原文未改动。');
+      const oldKind=(saved.node.markdown as SourceNode).kind;
+      const oldLevel=(saved.node.markdown as SourceNode).level;
+      const samePrefix=n.kind===oldKind&&(n.kind==='heading'?n.level===oldLevel:found[0].match(/^[ \t]*/)![0]===ws);
+      let suffix=header.slice(found[0].length+saved.node.text.length);
+      if(topic.blockId!==saved.node.blockId){suffix=suffix.replace(/[ \t]+\^[A-Za-z0-9-]+/, '');if(topic.blockId)suffix+=' ^'+topic.blockId;}
+      pieces[0]=(samePrefix?found[0]:prefix)+topic.text+suffix+ending;
+      if((topic.note??'')!==(saved.node.note??'')){
+        let a=1,b=pieces.length;
+        while(a<b&&(!pieces[a].trim()||/^\s*%%.*%%\s*$/.test(pieces[a])))a++;
+        while(b>a&&!pieces[b-1].trim())b--;
+        // A tail/lead belongs to the surrounding structure, not the edited note.
+        const meta=saved.node.markdown as SourceNode;
+        if(meta.tail||meta.lead)throw new Error('此节点含交错段落，请在 Markdown 中编辑备注；原文已保留。');
+        const noteIndent=n.kind==='list'?ws+tree.style.indent:'';
+        const indent=a<b?pieces[a].match(/^[ \t]*/)![0]:noteIndent;
+        pieces.splice(a,b-a,...(topic.note?topic.note.replace(/\r\n/g,'\n').split('\n').map(line=>(line?indent+line:'')+nl):[]));
+        if(topic.note&&!pieces[0].endsWith('\n'))pieces[0]+=nl;
+      }else if(n.kind==='list'&&oldKind==='list'){
+        const oldWs=found[0].match(/^[ \t]*/)![0];
+        if(oldWs!==ws)for(let i=1;i<pieces.length;i++)if(pieces[i].trim()&&pieces[i].startsWith(oldWs))pieces[i]=ws+pieces[i].slice(oldWs.length);
+      }
+      raw=pieces.join('');
+    }else raw=prefix+topic.text+(topic.blockId?' ^'+topic.blockId:'')+nl+(topic.note?topic.note.split(/\r?\n/).map(line=>(n.kind==='list'?ws+tree.style.indent:'')+line+nl).join(''):'');
+    if(text&&!text.endsWith('\n'))text+=nl;
+    if(saved)spans.push(...copiedSpans(saved.raw,raw,saved.start,text.length));
+    text+=raw;rendered.push(topic);
+  }
+  const parsed=parseMarkdownDoc(text,title,options);
+  const actual=topics(parsed).filter(n=>typeof(n.markdown as {sourceLine?:number})?.sourceLine==='number');
+  const shape=(n:Topic):unknown=>[n.text,(n.note??'').replace(/\r\n/g,'\n'),(n.children??[]).map(shape)];
+  if(JSON.stringify(shape(parsed.root))!==JSON.stringify(shape({...doc.root,children:[...(doc.root.children??[]),...(doc.floating??[])]})))throw new Error('无法在保留原文格式的同时表达此结构，请先在 Markdown 中调整；原文未改动。');
+  const next=copy(doc);
+  const output=topics(next);
+  for(let i=0;i<actual.length;i++){const target=output.find(n=>n.id===rendered[i]?.id);if(target)target.markdown=actual[i].markdown;}
+  next.markdown=parsed.markdown;
+  return {text,doc:next,spans};
 }

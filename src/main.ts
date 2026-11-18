@@ -1,5 +1,6 @@
 import { ItemView, WorkspaceLeaf, TFile, TFolder, App, MarkdownView, Notice, ViewStateResult, Setting, PluginSettingTab, MarkdownRenderer, setIcon, Component, normalizePath, Platform, Editor } from "obsidian";
-import { Comment, CommentManager } from "./commentManager";
+import { Comment, CommentManager, sourceFingerprint, mapCommentChange } from "./commentManager";
+import { mapSyncRange, migrateMarkdownMetadata, type SourceSpan } from '../vendor/personal-mindmap/src/fusion/markdown';
 import MindmapPluginBase from "../vendor/personal-mindmap/src/obsidian/main";
 import { registerMindmapBridges } from './mindmap-bridge';
 import { loadExcelTool, standaloneExcelToolEnabled } from './excel-tool';
@@ -1642,6 +1643,50 @@ class SideNoteSettingTab extends PluginSettingTab {
 // --- Main Plugin Class ---
 
 export default class SideNote extends MindmapPluginBase {
+    private pendingAnchorSaves=new Set<string>();
+    /** Serialize source writes with anchor persistence so file-change handlers cannot race them. */
+    async commitMarkdownSync(path:string,before:string,after:string,spans:SourceSpan[],commit:(guard?:()=>void)=>Promise<void>):Promise<void>{
+        await this.enqueueMutation(async()=>{
+            const guard=()=>{const live=this.getEditorTextForFile(path);if(live!==null&&live!==before&&live!==after)throw Error('Markdown 编辑器有更新内容，请等待同步后重试；未覆盖原文。');};
+            guard();
+            if(before===after){await commit(guard);return;}
+            const anchors=this.commentManager.getCommentsForFile(path).map(comment=>({comment,from:comment.absoluteFrom,to:comment.absoluteTo,text:comment.selectedText,orphaned:comment.isOrphaned}));
+            await commit(guard);
+            const latest=this.getEditorTextForFile(path);
+            if(latest!==null&&latest!==before&&latest!==after){this.pendingAnchorSaves.add(path);this.scheduleAnchorCheck(path);return;}
+            for(const {comment,from,to,text,orphaned} of anchors){
+                if(comment.anchorSourceFingerprint===sourceFingerprint(after))continue;
+                if(orphaned||typeof from!=='number'||typeof to!=='number'||before.slice(from,to)!==text)continue;
+                const mapped=mapSyncRange(spans,from,to);
+                if(!mapped||after.slice(mapped.from,mapped.to)!==text)continue;
+                Object.assign(comment,rebindComment(comment,after,mapped.from,mapped.to,comment.selectedTextHash),{anchorSourceFingerprint:sourceFingerprint(after)});
+            }
+            await this.commentManager.updateCommentCoordinatesForFile(after,path);
+            if(anchors.length)try{await this.saveCommentsForSingleFile(path);this.pendingAnchorSaves.delete(path);}catch(error){
+                // The source is already committed. Keep the deterministic new anchors in memory.
+                this.pendingAnchorSaves.add(path);this.scheduleAnchorCheck(path,true);new Notice(`原文已同步，批注坐标保存待重试：${String(error)}`);throw error;
+            }
+            this.refreshViews();this.refreshEditorDecorations();
+        });
+    }
+
+    private async migrateLegacyMindmapNotes():Promise<void>{
+        let migrated=0;
+        for(const file of this.app.vault.getMarkdownFiles()){
+            if(this.unloading)return;
+            try{
+                const source=this.getEditorTextForFile(file.path)??await this.app.vault.read(file);
+                const result=migrateMarkdownMetadata(source,file.basename);if(!result)continue;
+                // Recheck in Vault.process; concurrent user edits are never overwritten.
+                await this.markdownMaps.set(file.path,{source:result.text,doc:result.doc,legacySource:source});
+                await this.commitMarkdownSync(file.path,source,result.text,result.spans,async guard=>{
+                    await this.app.vault.process(file,disk=>{guard?.();if(disk!==source)throw Error('迁移期间原文已变化，已跳过');return result.text;});
+                });
+                migrated++;
+            }catch(error){console.error('旧脑图标记迁移未完成，原数据已保留',file.path,error);}
+        }
+        if(migrated)new Notice(`已迁移 ${migrated} 篇笔记的旧脑图标记，样式与批注已保留。`);
+    }
     preferences: Preferences = { filter: {}, presets: [] };
     drafts: DraftStore;
     pendingRebind: Comment | null = null;
@@ -1771,6 +1816,7 @@ export default class SideNote extends MindmapPluginBase {
                 await this.enqueueMutation(async () => {
                 if (this.pendingRebind !== target || !this.comments.includes(target) || editor.getValue() !== text) throw Error('原文或批注已变化，请重新选择');
                 const replacement = rebindComment(target, text, from, to, await generateHash(text.slice(from, to)));
+                replacement.anchorSourceFingerprint=sourceFingerprint(text);
                 if (editor.getValue() !== text) throw Error('原文已变化，请重新选择');
                 const before = { ...target }; Object.assign(target, replacement);
                 try { await this.saveCommentsForSingleFile(filePath); }
@@ -2572,6 +2618,7 @@ export default class SideNote extends MindmapPluginBase {
             comment.contextAfter = context.after;
             comment.occurrenceIndex = this.getOccurrenceIndex(text, comment.selectedText, mapped.from);
             comment.headingPath = this.getHeadingPath(text, comment.startLine);
+            comment.anchorSourceFingerprint=sourceFingerprint(text);
             changed = true;
         }
         if (!changed) return;
@@ -2637,17 +2684,8 @@ export default class SideNote extends MindmapPluginBase {
         if (!filePath || !update.docChanged) return;
 
         const comments = this.commentManager.getCommentsForFile(filePath);
-        comments.forEach(comment => {
-            if (typeof comment.absoluteFrom !== "number" || typeof comment.absoluteTo !== "number") return;
-            const mappedFrom = update.changes.mapPos(comment.absoluteFrom, -1);
-            const mappedTo = update.changes.mapPos(comment.absoluteTo, 1);
-            if (mappedFrom < 0 || mappedTo > update.state.doc.length || mappedFrom >= mappedTo) return;
-            const actualText = update.state.doc.sliceString(mappedFrom, mappedTo);
-            if (actualText === comment.selectedText) {
-                this.updateLineCharsFromOffsets(comment, update.state.doc, mappedFrom, mappedTo);
-                comment.isOrphaned = false;
-            }
-        });
+        const before=update.startState.doc.toString(),after=update.state.doc.toString();
+        comments.forEach(comment=>{if(mapCommentChange(comment,before,after,update.changes))comment.headingPath=this.getHeadingPath(after,comment.startLine);});
     }
 
     public async handleAddCommentFromEditorView(editorView: EditorView, markType: CommentMarkType, initialColor?: string, skipModal: boolean = false) {
@@ -3401,16 +3439,32 @@ export default class SideNote extends MindmapPluginBase {
             if (this.unloading) return;
             const file = this.app.vault.getAbstractFileByPath(filePath);
             if (!(file instanceof TFile) || file.extension.toLowerCase() !== 'md') return;
-            const before = this.commentManager.getCommentsForFile(filePath).map(target => ({ target, value: { ...target } }));
-            if (!before.length) return;
-            const content = await this.app.vault.read(file);
+            if (!this.commentManager.getCommentsForFile(filePath).length) return;
+            const diskContent = await this.app.vault.read(file);
+            const content = this.getEditorTextForFile(filePath) ?? diskContent;
             if (this.unloading || file.path !== filePath) return;
+            const before = this.commentManager.getCommentsForFile(filePath).map(target => ({ target, value: { ...target } }));
+            let applied:Comment[]|null=null;
             try {
-                await this.commentManager.updateCommentCoordinatesForFile(content, filePath);
-                if (this.unloading) { before.forEach(({ target, value }) => restoreComment(target, value)); return; }
-                if (!before.some(({ target, value }) => JSON.stringify(target) !== JSON.stringify(value))) return;
+                const candidates=before.map(({value})=>({...value}));
+                await new CommentManager(candidates).updateCommentCoordinatesForFile(content, filePath);
+                const latest=this.getEditorTextForFile(filePath);
+                if(latest!==null&&latest!==content){this.scheduleAnchorCheck(filePath);return;}
+                if(before.some(({target,value})=>JSON.stringify(target)!==JSON.stringify(value))){this.scheduleAnchorCheck(filePath);return;}
+                if (this.unloading) return;
+                before.forEach(({target},i)=>Object.assign(target,candidates[i]));
+                applied=candidates.map(candidate=>({...candidate}));
+                if (!this.pendingAnchorSaves.has(filePath)&&!before.some(({ target, value }) => JSON.stringify(target) !== JSON.stringify(value))) return;
                 await this.saveCommentsForSingleFile(filePath);
-            } catch (error) { before.forEach(({ target, value }) => restoreComment(target, value)); throw error; }
+                if(before.some(({target},i)=>JSON.stringify(target)!==JSON.stringify(applied![i]))){this.pendingAnchorSaves.add(filePath);this.scheduleAnchorCheck(filePath);}
+                else this.pendingAnchorSaves.delete(filePath);
+            } catch (error) {
+                if(applied)before.forEach(({target,value},i)=>{
+                    if(JSON.stringify(target)===JSON.stringify(applied![i]))restoreComment(target,value);
+                    else{this.pendingAnchorSaves.add(filePath);this.scheduleAnchorCheck(filePath,true);}
+                });
+                throw error;
+            }
             this.refreshViews(); this.refreshEditorDecorations(); this.scheduleRenderedTableHighlights();
             this.queueOrphanNotice(before.filter(({ target, value }) => target.isOrphaned && !value.isOrphaned).map(({ target }) => target));
         });
@@ -3588,6 +3642,7 @@ export default class SideNote extends MindmapPluginBase {
         this.registerMarkdownPostProcessor((el, ctx) => this.registerReadingViewSection(el, ctx), 100);
         this.registerReadingViewInteractions();
         this.app.workspace.onLayoutReady(() => {
+            void this.migrateLegacyMindmapNotes().catch(error=>console.error('脑图标记迁移失败，原数据已保留',error));
             this.rerenderReadingViews(); this.syncMarkdownToolbars();
             const active = this.app.workspace.getActiveFile();
             if (active) this.scheduleAnchorCheck(active.path);
@@ -3872,6 +3927,8 @@ export default class SideNote extends MindmapPluginBase {
 
     async addComment(newComment: Comment) {
         await this.enqueueMutation(async () => {
+            const source=this.getEditorTextForFile(newComment.filePath);
+            if(source!==null&&typeof newComment.absoluteFrom==='number'&&typeof newComment.absoluteTo==='number'&&source.slice(newComment.absoluteFrom,newComment.absoluteTo)===newComment.selectedText)newComment.anchorSourceFingerprint=sourceFingerprint(source);
             while (this.comments.some(c => c.timestamp === newComment.timestamp)) newComment.timestamp++;
             await this.commentManager.addComment(newComment);
             try { await this.saveCommentsForSingleFile(newComment.filePath); }

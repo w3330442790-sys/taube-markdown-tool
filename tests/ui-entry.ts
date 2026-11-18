@@ -1,9 +1,13 @@
 import SideNote, { SideNoteView, CommentModal } from '../artifacts/main-test';
-import { CommentManager } from '../src/commentManager';
+import { CommentManager, mapCommentChange } from '../src/commentManager';
+import { ChangeSet } from '@codemirror/state';
 import { DraftStore } from '../src/enhancements';
 import { TFile, MarkdownView, Platform } from 'obsidian';
+import { parseMarkdownDoc, syncMarkdownDoc, writeMarkdownDoc, migrateMarkdownMetadata } from '../vendor/personal-mindmap/src/fusion/markdown';
 
 const w = window as any;
+w.markdownSync={parseMarkdownDoc,syncMarkdownDoc,writeMarkdownDoc,migrateMarkdownMetadata};
+w.mapCommentChange=mapCommentChange;w.ChangeSet=ChangeSet;
 w.notices = [];
 w.setup = async (mobile = false) => {
     w.plugin?.onunload();

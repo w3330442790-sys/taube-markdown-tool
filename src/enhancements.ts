@@ -48,7 +48,7 @@ export function rebindComment(comment: Comment, text: string, from: number, to: 
     }
     return { ...comment, selectedText, selectedTextHash: hash, startLine: start.line, startChar: start.ch,
         endLine: end.line, endChar: end.ch, absoluteFrom: from, absoluteTo: to, occurrenceIndex,
-        headingPath: stack.map(x => x.title), blockHash: undefined,
+        headingPath: stack.map(x => x.title), blockHash: undefined, anchorSourceFingerprint: undefined,
         contextBefore: text.slice(Math.max(0, from - 50), from), contextAfter: text.slice(to, to + 50), isOrphaned: false };
 }
 

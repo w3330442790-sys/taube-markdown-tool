@@ -23,6 +23,79 @@ const server = http.createServer((req, res) => {
   const reset = async (mobile = false) => { await page.evaluate(mobile => { window.failWrite = false; localStorage.clear(); return window.setup(mobile); }, mobile); await page.locator('.sidenote-comment-item').first().waitFor(); };
   try {
     await page.goto(`http://127.0.0.1:${server.address().port}`); await page.waitForFunction(() => window.setup); await reset();
+    await check('bidirectional source sync keeps duplicate annotations through moves, rename, style and legacy cleanup',async()=>{
+      const result=await page.evaluate(async()=>{
+        const api=window.markdownSync,plugin=window.plugin;
+        let source='# Root\n\n- Same\n  note A\n- Same\n  note B\n';
+        plugin.getEditorTextForFile=()=>source;
+        const first=source.indexOf('Same'),second=source.lastIndexOf('Same');
+        plugin.comments=[{...plugin.comments[0],selectedText:'Same',absoluteFrom:first,absoluteTo:first+4,isOrphaned:false},{...plugin.comments[1],selectedText:'Same',absoluteFrom:second,absoluteTo:second+4,isOrphaned:false}];
+        plugin.commentManager.updateComments(plugin.comments);
+        let doc=api.parseMarkdownDoc(source,'note'),changed=structuredClone(doc);changed.root.children.reverse();
+        let next=api.syncMarkdownDoc(source,doc,changed,'note');
+        await plugin.commitMarkdownSync('note.md',source,next.text,next.spans,async()=>{source=next.text;});
+        const moved=plugin.comments.map(c=>({from:c.absoluteFrom,body:c.comment,orphaned:c.isOrphaned}));
+        const expectedMoved=[source.lastIndexOf('Same'),source.indexOf('Same')];
+        doc=next.doc;changed=structuredClone(doc);changed.root.children[0].text='Renamed';
+        next=api.syncMarkdownDoc(source,doc,changed,'note');
+        await plugin.commitMarkdownSync('note.md',source,next.text,next.spans,async()=>{source=next.text;});
+        const body=plugin.comments[1].comment;
+        const legacy=api.writeMarkdownDoc(source,{...next.doc,look:'hand'},'note');
+        const cleanup=api.migrateMarkdownMetadata(legacy);
+        source=legacy;plugin.comments=[{...plugin.comments[0],selectedText:'note A',absoluteFrom:legacy.indexOf('note A'),absoluteTo:legacy.indexOf('note A')+6,isOrphaned:false}];plugin.commentManager.updateComments(plugin.comments);
+        await plugin.commitMarkdownSync('note.md',legacy,cleanup.text,cleanup.spans,async()=>{source=cleanup.text;});
+        const comment=plugin.comments[0];
+        await plugin.commentManager.updateCommentCoordinatesForFile(source,'note.md');
+        return {moved,expectedMoved,body,clean:!source.includes('%%')&&!source.includes('wmind-fusion'),from:comment.absoluteFrom,expectedFrom:source.indexOf('note A'),orphaned:comment.isOrphaned};
+      });
+      assert.deepEqual(result.moved.map(c=>c.from),result.expectedMoved);
+      assert.equal(result.moved.every(c=>c.orphaned===false),true);
+      assert.equal(result.moved[0].body,'批注1');assert.equal(result.body,'批注2');
+      assert.equal(result.clean,true);assert.equal(result.from,result.expectedFrom);assert.equal(result.orphaned,false);await reset();
+    });
+    await check('revalidation uses unsaved editor text rather than stale disk coordinates',async()=>{
+      const result=await page.evaluate(async()=>{
+        const plugin=window.plugin;
+        const current='prefix\n'+window.noteText;
+        plugin.getEditorTextForFile=()=>current;
+        await plugin.revalidateCommentsForFile('note.md');
+        return {from:plugin.comments[0].absoluteFrom,expected:current.indexOf('甲方证'),orphaned:plugin.comments[0].isOrphaned};
+      });
+      assert.equal(result.from,result.expected);assert.equal(result.orphaned,false);await reset();
+    });
+    await check('delayed disk reads cannot overwrite newer proven duplicate-quote anchors',async()=>{
+      const result=await page.evaluate(async()=>{
+        const plugin=window.plugin,before='# A\n- same\n# B\n- same\n';let source=before;
+        plugin.getEditorTextForFile=()=>source;
+        const from=before.indexOf('same');
+        plugin.comments=[{...plugin.comments[0],selectedText:'same',absoluteFrom:from,absoluteTo:from+4,headingPath:['A'],contextBefore:undefined,contextAfter:undefined,isOrphaned:false}];plugin.commentManager.updateComments(plugin.comments);
+        let release,started;const gate=new Promise(r=>release=r),reading=new Promise(r=>started=r);
+        plugin.app.vault.read=async()=>{started();await gate;return before;};
+        const task=plugin.revalidateCommentsForFile('note.md');await reading;
+        const changes=window.ChangeSet.of([{from:2,to:3,insert:'B'},{from:13,to:14,insert:'A'}],before.length);
+        source='# B\n- same\n# A\n- same\n';
+        window.mapCommentChange(plugin.comments[0],before,source,changes);plugin.comments[0].headingPath=['B'];
+        release();await task;return {from:plugin.comments[0].absoluteFrom,orphaned:plugin.comments[0].isOrphaned};
+      });
+      assert.equal(result.from,6);assert.equal(result.orphaned,false);await reset();
+    });
+    await check('failed validation persistence cannot roll back a newer live editor anchor',async()=>{
+      const result=await page.evaluate(async()=>{
+        const plugin=window.plugin,before='# A\n- same\n# B\n- same\n';let source=before;
+        plugin.getEditorTextForFile=()=>source;
+        const from=before.indexOf('same');plugin.comments=[{...plugin.comments[0],selectedText:'same',absoluteFrom:from,absoluteTo:from+4,headingPath:['A'],contextBefore:undefined,contextAfter:undefined,isOrphaned:false}];plugin.commentManager.updateComments(plugin.comments);
+        plugin.pendingAnchorSaves.add('note.md');
+        let release,started;const gate=new Promise(r=>release=r),saving=new Promise(r=>started=r);
+        plugin.saveCommentsForSingleFile=async()=>{started();await gate;throw Error('disk');};
+        const task=plugin.revalidateCommentsForFile('note.md').catch(()=>{});await saving;
+        const changes=window.ChangeSet.of([{from:2,to:3,insert:'B'},{from:13,to:14,insert:'A'}],before.length);
+        source='# B\n- same\n# A\n- same\n';window.mapCommentChange(plugin.comments[0],before,source,changes);plugin.comments[0].headingPath=['B'];
+        release();await task;
+        plugin.saveCommentsForSingleFile=async()=>{};await plugin.revalidateCommentsForFile('note.md');
+        return {from:plugin.comments[0].absoluteFrom,heading:plugin.comments[0].headingPath,orphaned:plugin.comments[0].isOrphaned};
+      });
+      assert.equal(result.from,6);assert.deepEqual(result.heading,['B']);assert.equal(result.orphaned,false);await reset();
+    });
     await check('orphan warnings are transient and deduplicated while annotation content stays available', async () => {
       await page.evaluate(() => {
         const orphan=window.plugin.comments[2];

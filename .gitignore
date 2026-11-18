@@ -18,6 +18,7 @@ main.js
 # obsidian
 data.json
 mindmap-settings.json
+mindmap-documents.json*
 excel-settings.json
 state.json
 

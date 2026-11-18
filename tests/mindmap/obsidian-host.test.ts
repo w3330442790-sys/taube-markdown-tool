@@ -39,10 +39,67 @@ async function fixture(source=valid('A'),options:{echo?:boolean; external?:strin
  let view:any;
  const file=options.markdown?{path:'note.md',basename:'note',extension:'md'}:{path:'map.wmind',basename:'map',extension:'wmind'};
  const app={scope:{},vault:{async process(_file:unknown,transform:(disk:string)=>string){disk=transform(options.external??disk);if(options.echo)view.setViewData(disk,false);},async create(path:string,text:string){copies.push({path,text});return {path};}},fileManager:{async getAvailablePathForAttachment(name:string){return name;}}};
- const plugin={rootRule(){return {};},isLocked(){return false;},getViewport(){},rememberViewport(){},setLocked(){}};
+ const maps=new Map<string,any>();
+ const plugin={markdownMaps:{get(path:string){return maps.get(path);},async set(path:string,record:unknown){maps.set(path,structuredClone(record));}},rootRule(){return {};},isLocked(){return false;},getViewport(){},rememberViewport(){},setLocked(){}};
  view=new View({app,file},plugin);view.setViewData(source,true);
- return {view,copies,disk:()=>disk};
+ return {view,copies,maps,disk:()=>disk};
 }
+
+test('Markdown mindmap text edits synchronize without new markers, whitespace or source-only changes',async()=>{
+ for(const nl of ['\n','\r\n']) {
+  const source=['---','custom: kept','---','# Root','','* First','  annotated paragraph','* Second','  other paragraph',''].join(nl);
+  const {view,disk}=await fixture(source,{markdown:true});
+  const doc=structuredClone(view.doc);doc.root.children[0].text='Changed';doc.root.children[0].style={fill:'#ff0000'};
+  await view.receive({type:'edit',text:JSON.stringify(doc)});
+  assert.equal(disk(),source.replace('* First','* Changed'));
+  assert.equal(view.doc.root.children[0].text,'Changed');
+  assert.deepEqual(view.doc.root.children[0].style,{fill:'#ff0000'});
+  view.clear();view.setViewData(disk(),true);
+  assert.equal(view.doc.root.children[0].text,'Changed');
+  assert.deepEqual(view.doc.root.children[0].style,{fill:'#ff0000'});
+  const external=disk().replace('* Changed','* Manually edited');
+  view.setViewData(external,false);assert.equal(view.doc.root.children[0].text,'Manually edited');
+ }
+});
+
+test('closing immediately after an edit flushes the queued Markdown update before unloading',async()=>{
+ const source='# Root\n- A\n';const {view,disk}=await fixture(source,{markdown:true});
+ const doc=structuredClone(view.doc);doc.root.children[0].text='B';
+ const edit=view.receive({type:'edit',text:JSON.stringify(doc)});
+ await view.onUnloadFile(view.file);await edit;
+ assert.equal(disk(),'# Root\n- B\n');
+});
+
+test('failed metadata saves keep source intact, retry, and preserve full graph on close',async()=>{
+ const source='# Root\n- A\n';const {view,disk,copies,maps}=await fixture(source,{markdown:true});
+ const store=view.fusionPlugin.markdownMaps,write=store.set.bind(store);
+ store.set=async()=>{throw Error('disk');};
+ const doc=structuredClone(view.doc);doc.root.children[0].style={fill:'red'};
+ await view.receive({type:'edit',text:JSON.stringify(doc)});
+ assert.equal(disk(),source);assert.equal(view.doc.root.children[0].style.fill,'red');
+ await view.refreshFromSettings();assert.equal(view.doc.root.children[0].style.fill,'red');
+ await view.onUnloadFile(view.file);assert.equal(copies.length,1);
+ assert.match(copies[0].path,/\.wmind$/);assert.equal(JSON.parse(copies[0].text).root.children[0].style.fill,'red');
+ store.set=write;await view.save();assert.equal(maps.get('note.md').doc.root.children[0].style.fill,'red');
+});
+
+test('external source refresh cannot discard a pending graph-only edit after metadata failure',async()=>{
+ const source='# Root\n- A\n';const {view,copies}=await fixture(source,{markdown:true});
+ view.fusionPlugin.markdownMaps.set=async()=>{throw Error('disk');};
+ const doc=structuredClone(view.doc);doc.root.children[0].style={fill:'red'};
+ await view.receive({type:'edit',text:JSON.stringify(doc)});
+ view.setViewData(source+'- B\n',false);
+ assert.equal(view.doc.root.children[0].style.fill,'red');
+ await view.onUnloadFile(view.file);
+ assert.equal(JSON.parse(copies[0].text).root.children[0].style.fill,'red');
+});
+
+test('queued edits from an old file cannot write into a new file in the same pane',async()=>{
+ const {view,disk}=await fixture(valid('A'));
+ const task=view.receive({type:'edit',text:valid('old edit')});
+ view.clear();view.file={path:'other.wmind',extension:'wmind',basename:'other'};view.setViewData(valid('other'),true);
+ await task;assert.equal(view.doc.root.text,'other');assert.equal(disk(),valid('A'));
+});
 
 test('own Vault.process echoes do not create a conflict or rewind queued edits',async()=>{
  const {view,disk}=await fixture(valid('A'),{echo:true});

@@ -149,7 +149,7 @@ async function boot(seed: Record<string, string> = {}, enabledPlugins: string[] 
     metadataCache: { on, getCache() { return null; }, getFirstLinkpathDest() { return null; }, resolvedLinks: {} },
     vault: {
       configDir: '.obsidian', getName: () => 'test-vault', adapter,
-      on, read: async () => '', create: async () => ({}), process: async () => {}, getAbstractFileByPath: () => null,
+      on, read: async () => '', create: async () => ({}), process: async () => {}, getAbstractFileByPath: () => null, getMarkdownFiles:()=>[],
       createFolder: async () => {}, getResourcePath: () => '', getFiles: () => [],
     },
     fileManager: { getAvailablePathForAttachment: async (name: string) => name },

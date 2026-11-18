@@ -46,6 +46,8 @@ import { parseCustomMarkers, setCustomMarkers } from "./inline";
 import { VIEW_TYPE_XMIND, XmindView } from "./xmind-view";
 import { registerMindMapEmbeds } from "./embed";
 import { FileStateStore, LEGACY_KEYS, LegacyFileState, NoteCards, ViewportStore } from "./state";
+import { MarkdownMapStore } from '../../../src/fusion/persistence';
+import type { SourceSpan } from '../../../src/fusion/markdown';
 
 const FRONTMATTER_KEY = "mindmap";
 /** 页面预览的来源 id；注册后「页面预览」设置里会出现本插件的开关，默认和 Obsidian 一样按住 ⌘ 才弹 */
@@ -54,6 +56,8 @@ const HOVER_SOURCE = "gogoga-mindmap";
 const ICON_KEY = "icon";
 
 export default class MindMapPlugin extends Plugin {
+  markdownMaps!: MarkdownMapStore;
+  async commitMarkdownSync(_path:string,_before:string,_after:string,_spans:SourceSpan[],commit:(guard?:()=>void)=>Promise<void>):Promise<void>{await commit();}
   settings: MindMapSettings = { ...DEFAULT_SETTINGS };
   /** 锁定、备注展开、隐藏标注：插件目录下的 state.json，和设置分开 */
   fileState!: FileStateStore;
@@ -140,6 +144,7 @@ export default class MindMapPlugin extends Plugin {
     // 记住的视口、锁定、标注隐藏这些状态跟着文件改名 / 删除走
     this.registerEvent(
       this.app.vault.on("rename", (f, oldPath) => {
+        void this.markdownMaps.rename(oldPath,f.path).catch(error=>new Notice(`脑图元数据改名失败，原数据已保留：${String(error)}`));
         this.fileState.rename(oldPath, f.path);
         this.viewports.rename(oldPath, f.path);
       }),
@@ -220,6 +225,8 @@ export default class MindMapPlugin extends Plugin {
     this.fileState = new FileStateStore(this.app.vault.adapter, this.statePath());
     await this.fileState.load();
     this.viewports = new ViewportStore(this.app);
+    this.markdownMaps=new MarkdownMapStore(this.app.vault.adapter,`${this.manifest.dir}/mindmap-documents.json`);
+    try{await this.markdownMaps.load();}catch(error){new Notice(`无法读取脑图元数据，已停止覆盖：${String(error)}`);}
     if (migrated) await this.saveSettings();
     // 0.28.2 以前这些按文件的状态都记在 data.json 里：搬过去，再从设置里删掉
     if (LEGACY_KEYS.some((k) => k in settings)) {

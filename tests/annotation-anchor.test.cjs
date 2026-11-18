@@ -5,6 +5,38 @@ const esbuild = require('esbuild');
 const code = esbuild.buildSync({ entryPoints: [path.join(__dirname, '../src/commentManager.ts')], bundle: true, write: false, platform: 'node', format: 'cjs' }).outputFiles[0].text;
 const mod = { exports: {} }; new Function('module', 'exports', 'require', code)(mod, mod.exports, require);
 const { CommentManager } = mod.exports;
+
+test('verified repeated quotes remain located on repeated unchanged-file validation and restart', async () => {
+  const source='- Same\n- Same\n';
+  const comment=anchored(source,'Same',{contextBefore:undefined,contextAfter:undefined,anchorSourceFingerprint:mod.exports.sourceFingerprint?.(source)});
+  await new CommentManager([comment]).updateCommentCoordinatesForFile(source,'note.md');
+  assert.equal(comment.isOrphaned,false);
+  const reloaded=JSON.parse(JSON.stringify(comment));
+  await new CommentManager([reloaded]).updateCommentCoordinatesForFile(source,'note.md');
+  assert.equal(reloaded.isOrphaned,false);assert.equal(reloaded.absoluteFrom,2);
+});
+
+test('live transaction mapping excludes boundary insertions and preserves repeated-quote identity', async () => {
+  assert.equal(typeof mod.exports.mapCommentChange,'function');
+  const {ChangeSet}=require('@codemirror/state');
+  const before='- Same\n- Same\n';const comment=anchored(before,'Same');
+  const changes=ChangeSet.of([{from:2,insert:'prefix '},{from:6,insert:' suffix'}],before.length);
+  const after=changes.apply(require('@codemirror/state').Text.of(before.split('\n'))).toString();
+  assert.equal(mod.exports.mapCommentChange(comment,before,after,changes),true);
+  assert.equal(comment.absoluteFrom,after.indexOf('Same'));assert.equal(comment.absoluteTo,after.indexOf('Same')+4);
+  await new CommentManager([comment]).updateCommentCoordinatesForFile(after,'note.md');
+  assert.equal(comment.isOrphaned,false);
+});
+
+test('live mapping cannot resurrect orphaned or stale anchors from an unrelated document', () => {
+  assert.equal(typeof mod.exports.mapCommentChange,'function');
+  const {ChangeSet}=require('@codemirror/state');const source='- Same\n- Same\n';
+  const change=ChangeSet.of({from:0,insert:'prefix\n'},source.length);
+  for(const patch of [{isOrphaned:true},{absoluteFrom:0,absoluteTo:4}]){
+    const comment=anchored(source,'Same',patch);
+    assert.equal(mod.exports.mapCommentChange(comment,source,'prefix\n'+source,change),false);
+  }
+});
 function anchored(source, quote, overrides = {}) {
   const from = source.indexOf(quote), to = from + quote.length;
   const line = source.slice(0, from).split('\n');

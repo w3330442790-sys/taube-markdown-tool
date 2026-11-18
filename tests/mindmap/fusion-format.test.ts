@@ -2,6 +2,94 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses } from '../../vendor/personal-mindmap/src/fusion/markdown';
 import {addRange, moveMany, summaryToBranch} from '../../vendor/personal-mindmap/src/core/ops';
+import * as sync from '../../vendor/personal-mindmap/src/fusion/markdown';
+
+test('source sync preserves raw formatting for rename, style, move, indent and notes',()=>{
+ const write=(sync as any).syncMarkdownDoc;assert.equal(typeof write,'function');
+ const source='# Root\r\n\r\n* First  \r\n  note A\r\n* Second\r\n  note B\r\n';
+ const doc=parseMarkdownDoc(source,'Note');
+ doc.root.children![0].text='Changed';
+ let result=write(source,parseMarkdownDoc(source,'Note'),doc,'Note');
+ assert.equal(result.text,source.replace('First','Changed'));
+ const styled=parseMarkdownDoc(source,'Note');styled.root.children![0].style={fill:'red'};
+ assert.equal(write(source,parseMarkdownDoc(source,'Note'),styled,'Note').text,source);
+ const moved=parseMarkdownDoc(source,'Note');moved.root.children!.reverse();
+ result=write(source,parseMarkdownDoc(source,'Note'),moved,'Note');
+ assert.equal(result.text,'# Root\r\n\r\n* Second\r\n  note B\r\n* First  \r\n  note A\r\n');
+ const from=source.indexOf('note A');
+ const mapped=(sync as any).mapSyncRange(result.spans,from,from+6);
+ assert.equal(mapped.from,result.text.indexOf('note A'));
+ const note=parseMarkdownDoc(source,'Note');note.root.children![0].note='new note';
+ assert.equal(write(source,parseMarkdownDoc(source,'Note'),note,'Note').text,source.replace('note A','new note'));
+});
+
+test('legacy generated markers migrate outside Markdown without removing user comments or changing notes',()=>{
+ const migrate=(sync as any).migrateMarkdownMetadata;assert.equal(typeof migrate,'function');
+ const source='# Root\n\n- First\n  note A\n- Second\n  note B\n\n%%user comment%%\n';
+ const doc=parseMarkdownDoc(source,'Note');doc.root.children![0].style={fill:'red',fontSize:28};
+ const legacy=writeMarkdownDoc(source,doc,'Note');assert.match(legacy,/%%.*id=wf/);
+ const result=migrate(legacy);assert.ok(result);
+ assert.doesNotMatch(result.text,/wmind-fusion|%%.*id=wf|%%red/);
+ assert.match(result.text,/%%user comment%%/);
+ assert.deepEqual(result.doc.root.children[0].style,{fill:'red',fontSize:28});
+ const old=legacy.indexOf('note A'),range=(sync as any).mapSyncRange(result.spans,old,old+6);
+ assert.equal(range.from,result.text.indexOf('note A'));
+ assert.equal(migrate(result.text),null);
+ assert.equal(migrate('# Root\n%%red%%\nordinary %%comment%%\n'),null);
+});
+
+test('legacy migration leaves marker-like text inside fenced code and ordinary note lines intact',()=>{
+ const doc=parseMarkdownDoc('# Root\n\n- A\n- B\n','Note');doc.look='hand';
+ const legacy=writeMarkdownDoc('# Root\n\n- A\n- B\n',doc,'Note');
+ const source=legacy.replace('- B','  ```\n  %%id=wf2%%\n  ```\n  literal %%id=wf2%%\n- B');
+ const result=(sync as any).migrateMarkdownMetadata(source);
+ assert.ok(result);assert.match(result.text,/  ```\n  %%id=wf2%%\n  ```\n  literal %%id=wf2%%/);
+ assert.equal(parseMarkdownDoc(result.text,'Note').root.children![0].note,parseMarkdownDoc(source,'Note').root.children![0].note);
+});
+
+test('external node moves preserve unique node identity before considering positional renames',()=>{
+ const source='# Root\n- Parent\n  - A\n- B\n';
+ const doc=parseMarkdownDoc(source,'Note'),a=doc.root.children![0].children![0],b=doc.root.children![1];
+ a.style={fill:'red'};b.style={fill:'blue'};
+ const result=(sync as any).restoreMarkdownMetadata('# Root\n- Parent\n  - B\n- A\n','Note',{source,doc});
+ assert.equal(result.root.children[0].children[0].id,b.id);assert.equal(result.root.children[0].children[0].style.fill,'blue');
+ assert.equal(result.root.children[1].id,a.id);assert.equal(result.root.children[1].style.fill,'red');
+});
+
+test('external content edits preserve the membership of graph-only floating topics',()=>{
+ const source='# Root\n- A\n- Free\n',doc=parseMarkdownDoc(source,'Note');
+ const free=doc.root.children!.pop()!;free.position={x:30,y:40};doc.floating=[free];
+ const result=(sync as any).restoreMarkdownMetadata(source+'- B\n','Note',{source,doc});
+ assert.equal(result.floating?.[0].id,free.id);assert.deepEqual(result.floating?.[0].position,{x:30,y:40});
+ assert.deepEqual(result.root.children.map((n:any)=>n.text),['A','B']);
+});
+
+test('legacy notes using filename as root migrate without inserting a heading',()=>{
+ const source='- A\n- B\n',doc=parseMarkdownDoc(source,'Filename');doc.look='hand';
+ const legacy=writeMarkdownDoc(source,doc,'Filename');
+ const result=(sync as any).migrateMarkdownMetadata(legacy,'Filename');
+ assert.ok(result);assert.equal(result.doc.root.text,'Filename');assert.doesNotMatch(result.text,/%%|wmind-fusion|^#/m);
+});
+
+test('filename-root notes synchronize their introductory paragraph while preserving frontmatter and spacing',()=>{
+ for(const source of ['Intro text\n\n- A\n','---\ncustom: kept\n---\n\nIntro text\n\n- A\n']){
+   const before=parseMarkdownDoc(source,'Filename'),doc=structuredClone(before);doc.root.note='Changed intro';
+   const result=(sync as any).syncMarkdownDoc(source,before,doc,'Filename');
+   assert.equal(result.text,source.replace('Intro text','Changed intro'));
+ }
+});
+
+test('source sync supports insert, delete and indentation without adding blank lines',()=>{
+ const write=(sync as any).syncMarkdownDoc;
+ const source='# Root\n- A\n  - Child\n- B\n';
+ const before=parseMarkdownDoc(source,'Note'),doc=structuredClone(before);
+ const b=doc.root.children!.pop()!;doc.root.children![0].children!.push(b);
+ assert.equal(write(source,before,doc,'Note').text,'# Root\n- A\n  - Child\n  - B\n');
+ const removed=structuredClone(before);removed.root.children!.shift();
+ assert.equal(write(source,before,removed,'Note').text,'# Root\n- B\n');
+ const added=structuredClone(before);added.root.children!.push({id:'new',text:'New'});
+ assert.equal(write(source,before,added,'Note').text,source+'- New\n');
+});
 test('moving list topics after heading siblings is represented in plain Markdown in the same order',()=>{
  const source='# Root\n\n- List\n\n## Heading\n';
  let doc=parseMarkdownDoc(source,'Note');const [list,heading]=doc.root.children!;
