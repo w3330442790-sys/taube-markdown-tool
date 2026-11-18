@@ -2,6 +2,71 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
 import { createRequire } from 'node:module';
+import {parseMarkdownDoc} from '../../vendor/personal-mindmap/src/fusion/markdown';
+
+test('startup quote-gap repair keeps repeated and multiline annotations attached and retries failed writes',async()=>{
+ const f=await boot();
+ try{
+  const source='# Root\n正文\n\n> 相同引用\n正文\n\n> 相同引用\n';let disk=source,fail=true;
+  const file={path:'note.md',basename:'note'};
+  f.app.vault.getMarkdownFiles=()=>[file];f.app.vault.read=async()=>disk;
+  f.app.vault.process=async(_file:unknown,transform:(s:string)=>string)=>{if(fail)throw Error('disk busy');disk=transform(disk);};
+  f.plugin.getEditorTextForFile=()=>null;
+  f.plugin.refreshViews=()=>{};f.plugin.refreshEditorDecorations=()=>{};
+  let saves=0;f.plugin.saveCommentsForSingleFile=async()=>{saves++;};
+  await f.plugin.markdownMaps.set(file.path,{source,doc:parseMarkdownDoc(source,'note'),legacySource:'first historical backup'});
+  const quotes=['相同引用','正文\n\n> 相同引用'];
+  for(const [index,quote]of quotes.entries()){
+   const from=source.lastIndexOf(quote),prefix=source.slice(0,from).split('\n');
+   await f.plugin.commentManager.addComment({filePath:file.path,selectedText:quote,selectedTextHash:'hash',comment:'保留批注'+index,timestamp:index+1,absoluteFrom:from,absoluteTo:from+quote.length,startLine:prefix.length-1,startChar:prefix.at(-1)!.length,endLine:prefix.length-1,endChar:0});
+  }
+  const oldError=console.error;console.error=()=>{};
+  try{await f.plugin.migrateLegacyMindmapNotes();}finally{console.error=oldError;}
+  assert.equal(disk,source);
+  fail=false;await f.plugin.migrateLegacyMindmapNotes();
+  assert.equal(disk,source.replace(/正文\n\n>/g,'正文\n>'));
+  const comments=f.plugin.commentManager.getCommentsForFile(file.path);
+  for(const comment of comments){
+   assert.equal(comment.isOrphaned,false);
+   assert.equal(comment.absoluteFrom,disk.lastIndexOf(comment.selectedText));
+   assert.equal(disk.slice(comment.absoluteFrom,comment.absoluteTo),comment.selectedText);
+   assert.equal(comment.comment,'保留批注'+(comment.timestamp-1));
+  }
+  assert.equal(comments[1].selectedText,'正文\n> 相同引用');
+  assert.equal(saves,1);
+  assert.equal(f.plugin.markdownMaps.get(file.path).legacySource,'first historical backup');
+  assert.equal(f.plugin.markdownMaps.get(file.path).quoteGapRepairBefore,undefined);
+  disk=source;await f.plugin.migrateLegacyMindmapNotes();
+  assert.equal(disk,source,'a successful repair does not undo subsequent user formatting');
+ }finally{f.cleanup();}
+});
+
+test('a new editor transaction during repair hashing cannot be revalidated against the old source',async()=>{
+ const f=await boot();const originalDigest=crypto.subtle.digest;
+ let release!:()=>void,started!:()=>void;
+ const gate=new Promise<void>(resolve=>release=resolve),hashing=new Promise<void>(resolve=>started=resolve);
+ try{
+  const before='# A\n正文\n\n> same\n# B\n> same\n';
+  const {repairMindmapMarkdown}=await import('../../vendor/personal-mindmap/src/fusion/markdown');
+  const repaired=repairMindmapMarkdown(before,'note',{source:before,doc:parseMarkdownDoc(before,'note')})!;
+  let live=before;f.plugin.getEditorTextForFile=()=>live;
+  f.plugin.scheduleAnchorCheck=()=>{};
+  f.plugin.saveCommentsForSingleFile=async()=>{throw Error('stale anchors must not be saved');};
+  for(const [index,text]of ['正文\n\n> same','same'].entries()){
+   const from=index?before.lastIndexOf(text):before.indexOf(text);
+   await f.plugin.commentManager.addComment({filePath:'note.md',selectedText:text,selectedTextHash:'hash',comment:'keep',timestamp:index+1,absoluteFrom:from,absoluteTo:from+text.length,startLine:0,startChar:0,endLine:0,endChar:0});
+  }
+  crypto.subtle.digest=async(...args:Parameters<typeof originalDigest>)=>{started();await gate;return originalDigest.apply(crypto.subtle,args);};
+  const task=f.plugin.commitMarkdownSync('note.md',before,repaired.text,repaired.spans,async()=>{live=repaired.text;});
+  await hashing;
+  live='# B\n> same\n# A\n正文\n> same\n';
+  const second=f.plugin.commentManager.getCommentsForFile('note.md')[1];
+  Object.assign(second,{absoluteFrom:6,absoluteTo:10,startLine:1,startChar:2,endLine:1,endChar:6,headingPath:['B'],anchorSourceFingerprint:'newer-transaction'});
+  const snapshot=JSON.stringify(second);
+  release();await task;
+  assert.equal(JSON.stringify(second),snapshot);
+ }finally{release();crypto.subtle.digest=originalDigest;f.cleanup();}
+});
 
 /**
  * Boots the fused Taube Markdown Tool class with a browserless Obsidian API.

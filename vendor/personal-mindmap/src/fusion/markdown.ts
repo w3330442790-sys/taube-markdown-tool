@@ -304,6 +304,58 @@ export function writeMarkdownDoc(source: string, doc: MindDoc, title: string, op
 
 export interface SourceSpan { from: number; to: number; target: number }
 
+/** One-time cleanup of old map-owned files; new/user-authored files are opt-out. */
+export function repairMindmapMarkdown(source:string,title:string,record?:{source:string;doc:MindDoc;quoteGapRepair?:1;quoteGapRepairBefore?:string},options:MarkdownFusionOptions={}):{text:string;doc:MindDoc;spans:SourceSpan[]}|null {
+  const migration=migrateMarkdownMetadata(source,title);
+  if(!migration&&(!record||(record.quoteGapRepair===1&&!(record.quoteGapRepairBefore===source&&record.source!==source))))return null;
+  const body=migration?.text??source;
+  const lines=body.match(/[^\n]*\n|[^\n]+$/g)??[];
+  const opaque:boolean[]=[];
+  let fence:{char:string;length:number}|undefined,html:string|undefined;
+  let frontmatter=lines[0]?.replace(/\r?\n$/,'')==='---';
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i].replace(/\r?\n$/,'');
+    if(frontmatter){opaque[i]=true;if(i>0&&/^(---|\.\.\.)$/.test(line))frontmatter=false;continue;}
+    const mark=/^[ \t]*(`{3,}|~{3,})(.*)$/.exec(line);
+    if(fence){opaque[i]=true;if(mark&&mark[1][0]===fence.char&&mark[1].length>=fence.length&&!mark[2].trim())fence=undefined;continue;}
+    if(!html&&mark){opaque[i]=true;fence={char:mark[1][0],length:mark[1].length};continue;}
+    opaque[i]=!!html||/^( {4}|\t)/.test(line);
+    // Comments may begin midway through prose. Code-span literals do not open comments.
+    const prose=line.replace(/(`+)[^`]*?\1/g,'');
+    for(const token of prose.match(/<!--|-->|%%|<\/?(?:pre|script|style|textarea)\b[^>]*>/gi)??[]){
+      const lower=token.toLowerCase();
+      if(html){if(lower===html)html=undefined;continue;}
+      if(lower==='<!--')html='-->';
+      else if(lower==='%%')html='%%';
+      else if(/^<(pre|script|style|textarea)\b/.test(lower))html=`</${/^<(\w+)/.exec(lower)![1]}>`;
+      else continue;
+      opaque[i]=true;
+    }
+  }
+  const removed=new Set<number>();
+  for(let i=0;i<lines.length;i++){
+    if(opaque[i]||!/^ {0,3}>/.test(lines[i]))continue;
+    let previous=i-1;while(previous>=0&&!lines[previous].trim()&&!opaque[previous])previous--;
+    if(previous===i-1||previous<0||opaque[previous]||/^[ \t]*>/.test(lines[previous]))continue;
+    for(let j=previous+1;j<i;j++)removed.add(j);
+  }
+  if(!removed.size)return migration??{text:source,doc:restoreMarkdownMetadata(source,title,record,options),spans:source?[{from:0,to:source.length,target:0}]:[]};
+  let text='',offset=0;const spans:SourceSpan[]=[];
+  for(let i=0;i<lines.length;i++){
+    const line=lines[i];
+    if(!removed.has(i)){
+      if(migration){
+        // Compose the marker-removal map with this exact deletion map.
+        for(const span of migration.spans){const a=Math.max(span.target,offset),b=Math.min(span.target+span.to-span.from,offset+line.length);if(b>a)spans.push({from:span.from+a-span.target,to:span.from+b-span.target,target:text.length+a-offset});}
+      }else spans.push({from:offset,to:offset+line.length,target:text.length});
+      text+=line;
+    }
+    offset+=line.length;
+  }
+  const baseline=migration?{source:body,doc:migration.doc}:record;
+  return {text,spans,doc:restoreMarkdownMetadata(text,title,baseline,options)};
+}
+
 /** Only a valid legacy envelope proves that recognized syntax was plugin metadata. */
 export function migrateMarkdownMetadata(source:string,title=''): {text:string;doc:MindDoc;spans:SourceSpan[]}|null {
   const legacy=extension(source);if(!legacy.saved||!legacy.identities)return null;
@@ -389,6 +441,22 @@ export function mapSyncRange(spans: SourceSpan[], from: number, to: number): {fr
     delta=shift;cursor=Math.max(cursor,span.to);if(cursor>=to)return {from:from+delta,to:to+delta};
   }
   return null;
+}
+
+/** An exact deletion map can also preserve selections crossing removed whitespace. */
+export function mapSyncRangeAfterWhitespaceDeletion(spans:SourceSpan[],before:string,after:string,from:number,to:number):{from:number;to:number}|null {
+  if(from<0||to>before.length||from>=to)return null;
+  let cursor=from,start:number|undefined,end:number|undefined;
+  for(const span of spans.filter(s=>s.to>from&&s.from<to).sort((a,b)=>a.from-b.from)){
+    const a=Math.max(cursor,span.from),b=Math.min(to,span.to);if(b<=a)continue;
+    if(/\S/.test(before.slice(cursor,a)))return null;
+    const target=span.target+a-span.from;
+    if(end!==undefined&&target!==end)return null;
+    if(before.slice(a,b)!==after.slice(target,target+b-a))return null;
+    start??=target;end=target+b-a;cursor=b;
+  }
+  if(start===undefined||end===undefined||/\S/.test(before.slice(cursor,to))||!after.slice(start,end).trim())return null;
+  return {from:start,to:end};
 }
 const topics=(doc:MindDoc):Topic[]=>{
   const walk=(n:Topic):Topic[]=>[n,...(n.children??[]).flatMap(walk)];

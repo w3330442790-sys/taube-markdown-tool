@@ -735,6 +735,9 @@ export function serializeMarkdown(doc: MindDoc): string {
   const ensureBlank = () => {
     if (out.length && out[out.length - 1] !== "") out.push("");
   };
+  // Blockquotes interrupt paragraphs themselves. Synthetic blank separators
+  // change the source and can make list-contained quotes become loose blocks.
+  const startsQuote = (text: string) => /^ {0,3}>/.test(text);
   const pushBlock = (text: string) => {
     if (!text) return;
     out.push(...text.split("\n"));
@@ -755,7 +758,7 @@ export function serializeMarkdown(doc: MindDoc): string {
     const marker = formatMarker(node).trim();
     if (marker) out.push(marker);
     if (node.note) {
-      ensureBlank();
+      if (!startsQuote(node.note)) ensureBlank();
       pushBlock(normalizeNote(node.note, false, style.headingsOnly));
     }
     const kids = allChildren(node);
@@ -767,7 +770,7 @@ export function serializeMarkdown(doc: MindDoc): string {
       for (const c of listKids) emitList(c, 0);
     }
     if (node.tail) {
-      ensureBlank();
+      if (!startsQuote(node.tail)) ensureBlank();
       pushBlock(normalizeNote(node.tail, false, style.headingsOnly));
     }
     for (const c of headingKids) emitHeading(c, level + 1);
@@ -775,9 +778,10 @@ export function serializeMarkdown(doc: MindDoc): string {
 
   /** 一段属于某一层的文字（列表项里的要缩进到那一层），前后空一行，和列表分开 */
   const emitBlock = (text: string, depth: number) => {
-    ensureBlank();
+    const quote = startsQuote(text);
+    if (!quote) ensureBlank();
     for (const l of normalizeNote(text, depth > 0).split("\n")) out.push(l === "" ? "" : `${style.indent.repeat(depth)}${l}`);
-    ensureBlank();
+    if (!quote) ensureBlank();
   };
 
   const emitList = (node: MindNode, depth: number) => {
@@ -800,7 +804,7 @@ export function serializeMarkdown(doc: MindDoc): string {
     emitHeading(root, 1);
   } else {
     if (root.note) {
-      ensureBlank();
+      if (!startsQuote(root.note)) ensureBlank();
       pushBlock(normalizeNote(root.note, false, style.headingsOnly));
     }
     const level = Math.max(1, root.level + 1);
@@ -812,7 +816,7 @@ export function serializeMarkdown(doc: MindDoc): string {
       for (const c of listKids) emitList(c, 0);
     }
     if (root.tail) {
-      ensureBlank();
+      if (!startsQuote(root.tail)) ensureBlank();
       pushBlock(normalizeNote(root.tail, false, style.headingsOnly));
     }
     for (const c of headingKids) emitHeading(c, Math.min(level, 6));

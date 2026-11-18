@@ -1,6 +1,6 @@
 import type { MindDoc } from '../core/types';
 import { parse } from '../core/doc';
-export interface MarkdownMapRecord { source:string; doc:MindDoc; legacySource?:string }
+export interface MarkdownMapRecord { source:string; doc:MindDoc; legacySource?:string; quoteGapRepair?:1; quoteGapRepairBefore?:string }
 interface MapAdapter { exists(path:string):Promise<boolean>; read(path:string):Promise<string>; write(path:string,text:string):Promise<unknown> }
 
 /** Graphical metadata is separate from both Markdown and annotation storage. */

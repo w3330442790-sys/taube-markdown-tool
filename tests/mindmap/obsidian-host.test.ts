@@ -62,6 +62,24 @@ test('Markdown mindmap text edits synchronize without new markers, whitespace or
  }
 });
 
+test('ready repairs old managed quote gaps once and later edits preserve the repaired source',async()=>{
+ const source='# Root\n正文\n\n> 引用\n';
+ const {view,disk,maps}=await fixture(source,{markdown:true});
+ maps.set('note.md',{source,doc:structuredClone(view.doc)});
+ view.setViewData(source,true);
+ await view.receive({type:'ready'});
+ assert.equal(disk(),'# Root\n正文\n> 引用\n');
+ assert.equal(maps.get('note.md').legacySource,source);
+ assert.equal(maps.get('note.md').quoteGapRepair,1);
+ const next=structuredClone(view.doc);next.root.note=next.root.note.replace('正文','修改正文');
+ await view.receive({type:'edit',text:JSON.stringify(next)});
+ assert.equal(disk(),'# Root\n修改正文\n> 引用\n');
+ const userSource='# Root\n修改正文\n\n> 引用\n';
+ view.setViewData(userSource,false);
+ await view.receive({type:'ready'});
+ assert.equal(view.local,userSource,'later user-authored formatting is not repeatedly cleaned');
+});
+
 test('closing immediately after an edit flushes the queued Markdown update before unloading',async()=>{
  const source='# Root\n- A\n';const {view,disk}=await fixture(source,{markdown:true});
  const doc=structuredClone(view.doc);doc.root.children[0].text='B';

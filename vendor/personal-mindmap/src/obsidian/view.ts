@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { App } from '../../webview/src/App';
 import { parse, serialize } from '../core/doc';
 import type { MindDoc, Topic } from '../core/types';
-import { parseMarkdownDoc, syncMarkdownDoc, restoreMarkdownMetadata, migrateMarkdownMetadata, type SourceSpan } from '../fusion/markdown';
+import { parseMarkdownDoc, syncMarkdownDoc, restoreMarkdownMetadata, repairMindmapMarkdown, type SourceSpan } from '../fusion/markdown';
 import { SnapshotWriter } from '../fusion/persistence';
 import { scopeHost } from '../fusion/lifetime';
 import type { Host, HostCommand, InMsg, OutMsg } from '../../webview/src/host';
@@ -126,10 +126,11 @@ export class WmindView extends TextFileView {
       const pending=this.pendingMarkdown,file=this.file,writer=this.writer;
       this.markdownSaveTask=(async()=>{try{
         // Store the full graph first. A failed metadata write cannot damage source text.
-        await this.plugin.markdownMaps.set(file.path,{source:pending.source,doc:pending.doc,...(pending.legacySource?{legacySource:pending.legacySource}:{})},this.mapBaseline);
+        await this.plugin.markdownMaps.set(file.path,{source:pending.source,doc:pending.doc,quoteGapRepair:1,...(pending.legacySource?{legacySource:pending.legacySource,quoteGapRepairBefore:pending.before}:{})},this.mapBaseline);
         this.mapBaseline=JSON.stringify(this.plugin.markdownMaps.get(file.path)??null);
         const commit=async(guard?:()=>void)=>{if(pending.before!==pending.source)await writer.write(pending.source,guard);};
         if(this.plugin.commitMarkdownSync)await this.plugin.commitMarkdownSync(file.path,pending.before,pending.source,pending.spans,commit);else await commit();
+        if(pending.legacySource){const record=this.plugin.markdownMaps.get(file.path)!;await this.plugin.markdownMaps.set(file.path,{...record,quoteGapRepairBefore:undefined},this.mapBaseline);this.mapBaseline=JSON.stringify(this.plugin.markdownMaps.get(file.path)??null);}
         if(this.pendingMarkdown===pending)this.pendingMarkdown=null;
       }catch(error){new Notice(`脑图同步未完成，编辑仍保留，可再次保存：${String(error)}`);}})();
       try{await this.markdownSaveTask;}finally{this.markdownSaveTask=null;}
@@ -178,7 +179,7 @@ export class WmindView extends TextFileView {
     }
     switch(m.type){
       case 'ready':{
-        if(this.markdownMode&&this.currentDoc){const migration=migrateMarkdownMetadata(this.lastText,this.file?.basename);if(migration){this.pendingMarkdown={source:migration.text,doc:migration.doc,spans:migration.spans,before:this.lastText,legacySource:this.lastText};this.lastText=migration.text;this.data=migration.text;this.currentDoc=migration.doc;await this.save();}}
+        if(this.markdownMode&&this.currentDoc&&!this.pendingMarkdown){const migration=repairMindmapMarkdown(this.lastText,this.file?.basename??'',this.file?this.plugin.markdownMaps?.get(this.file.path):undefined,this.plugin.rootRule());if(migration){this.pendingMarkdown={source:migration.text,doc:migration.doc,spans:migration.spans,before:this.lastText,legacySource:this.lastText};this.lastText=migration.text;this.data=migration.text;this.currentDoc=migration.doc;await this.save();}}
         this.emit({type:'init',text:this.currentDoc?serialize(this.currentDoc):this.lastText,lang:moment.locale(),fileName:this.file?.basename??'mindmap',host:'obsidian'});
         if(Array.isArray(this.currentDoc?.fusionWarnings))for(const warning of this.currentDoc.fusionWarnings)if(typeof warning==='string')new Notice(warning);
         if(this.pendingSubpath){const subpath=this.pendingSubpath;this.pendingSubpath=null;this.revealSubpath(subpath);}

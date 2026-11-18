@@ -4,6 +4,66 @@ import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses } from '../../
 import {addRange, moveMany, summaryToBranch} from '../../vendor/personal-mindmap/src/core/ops';
 import * as sync from '../../vendor/personal-mindmap/src/fusion/markdown';
 
+test('serializing quote notes and deleting a quote-adjacent child adds no blank separator',async()=>{
+ const {parseMarkdown,serializeMarkdown}=await import('../../vendor/personal-mindmap/vendor/gogoga/src/markdown');
+ const {preserveFormat}=await import('../../vendor/personal-mindmap/vendor/gogoga/src/merge');
+ for(const source of ['# Root\n> 引用\n','# Root\n- Item\n  - 正文\n  > 引用\n- End\n']){
+  const doc=parseMarkdown(source);
+  if(doc.root.children.length)doc.root.children[0].children=[];
+  else doc.root.note='> 修改引用';
+  const next=serializeMarkdown(doc);
+  const result=preserveFormat(source,next,t=>serializeMarkdown(parseMarkdown(t)));
+  assert.equal(result,source.includes('- 正文')?source.replace('  - 正文\n',''):source.replace('> 引用','> 修改引用'));
+ }
+});
+
+test('one-time repair removes existing quote gaps only from managed files and maps surviving text exactly',()=>{
+ const repair=(sync as any).repairMindmapMarkdown;
+ assert.equal(typeof repair,'function');
+ for(const nl of ['\n','\r\n']){
+  const source=['# Root','','正文','','','> 引用','','普通段落','','后续段落','','```md','例子','','> literal','```','','- Branch','  note','','  > nested quote',''].join(nl);
+  const doc=parseMarkdownDoc(source,'Note');doc.root.style={fontSize:27};
+  const record={source,doc};
+  assert.equal(repair(source,'Note',undefined),null);
+  const result=repair(source,'Note',record);
+  const expected=source.replace('正文'+nl+nl+nl+'>','正文'+nl+'>').replace('  note'+nl+nl+'  >','  note'+nl+'  >');
+  assert.equal(result.text,expected);
+  assert.equal(result.doc.root.style.fontSize,27);
+  for(const text of ['正文','引用','literal','nested quote']){
+   const from=source.indexOf(text),mapped=sync.mapSyncRange(result.spans,from,from+text.length);
+   assert.deepEqual(mapped,{from:expected.indexOf(text),to:expected.indexOf(text)+text.length});
+  }
+  assert.equal(repair(source,'Note',{...record,quoteGapRepair:1}),null);
+  assert.equal(repair(expected,'Note',{source:expected,doc:result.doc}).text,expected);
+  const pending={source:expected,doc:result.doc,quoteGapRepair:1,legacySource:'older backup',quoteGapRepairBefore:source};
+  assert.equal(repair(source,'Note',pending).text,expected,'retry a source-write failure independently of the first historical backup');
+ }
+});
+
+test('quote gap cleanup skips inline-started multiline comments and resumes after fenced examples',()=>{
+ const source='# Root\ntext <!-- user comment\n\n> HTML literal\n-->\ntext %% user comment\n\n> Obsidian literal\n%%\n```md\n<!--\n\n> code literal\n```\n正文\n\n> 引用\n';
+ const result=(sync as any).repairMindmapMarkdown(source,'Note',{source,doc:parseMarkdownDoc(source,'Note')});
+ assert.equal(result.text,source.replace('正文\n\n> 引用','正文\n> 引用'));
+});
+
+test('legacy marker and quote-gap removal compose exact annotation maps without deleting literal comments',()=>{
+ const source='# Root\n正文\n\n> 引用\n\n%%user comment%%\n';
+ const doc=parseMarkdownDoc(source,'Note');doc.look='hand';
+ const legacy=writeMarkdownDoc(source,doc,'Note');
+ const result=sync.repairMindmapMarkdown(legacy,'Note')!;
+ assert.equal(result.text,source.replace('正文\n\n>','正文\n>'));
+ const from=legacy.indexOf('引用');
+ assert.deepEqual(sync.mapSyncRange(result.spans,from,from+2),{from:result.text.indexOf('引用'),to:result.text.indexOf('引用')+2});
+});
+
+test('whitespace-only selection mapping rejects deleted words, inserted content and reordered source',()=>{
+ const map=sync.mapSyncRangeAfterWhitespaceDeletion;
+ assert.deepEqual(map([{from:0,to:2,target:0},{from:3,to:5,target:2}],'A\n\n>B','A\n>B',0,5),{from:0,to:4});
+ assert.equal(map([{from:0,to:1,target:0},{from:2,to:3,target:1}],'AXB','AB',0,3),null);
+ assert.equal(map([{from:0,to:1,target:0},{from:1,to:2,target:2}],'AB','AXB',0,2),null);
+ assert.equal(map([{from:0,to:1,target:1},{from:1,to:2,target:0}],'AB','BA',0,2),null);
+});
+
 test('source sync preserves raw formatting for rename, style, move, indent and notes',()=>{
  const write=(sync as any).syncMarkdownDoc;assert.equal(typeof write,'function');
  const source='# Root\r\n\r\n* First  \r\n  note A\r\n* Second\r\n  note B\r\n';

@@ -1,6 +1,6 @@
 import { ItemView, WorkspaceLeaf, TFile, TFolder, App, MarkdownView, Notice, ViewStateResult, Setting, PluginSettingTab, MarkdownRenderer, setIcon, Component, normalizePath, Platform, Editor } from "obsidian";
 import { Comment, CommentManager, sourceFingerprint, mapCommentChange } from "./commentManager";
-import { mapSyncRange, migrateMarkdownMetadata, type SourceSpan } from '../vendor/personal-mindmap/src/fusion/markdown';
+import { mapSyncRange, mapSyncRangeAfterWhitespaceDeletion, repairMindmapMarkdown, type SourceSpan } from '../vendor/personal-mindmap/src/fusion/markdown';
 import MindmapPluginBase from "../vendor/personal-mindmap/src/obsidian/main";
 import { registerMindmapBridges } from './mindmap-bridge';
 import { loadExcelTool, standaloneExcelToolEnabled } from './excel-tool';
@@ -1657,11 +1657,21 @@ export default class SideNote extends MindmapPluginBase {
             for(const {comment,from,to,text,orphaned} of anchors){
                 if(comment.anchorSourceFingerprint===sourceFingerprint(after))continue;
                 if(orphaned||typeof from!=='number'||typeof to!=='number'||before.slice(from,to)!==text)continue;
-                const mapped=mapSyncRange(spans,from,to);
-                if(!mapped||after.slice(mapped.from,mapped.to)!==text)continue;
-                Object.assign(comment,rebindComment(comment,after,mapped.from,mapped.to,comment.selectedTextHash),{anchorSourceFingerprint:sourceFingerprint(after)});
+                const mapped=mapSyncRange(spans,from,to)??mapSyncRangeAfterWhitespaceDeletion(spans,before,after,from,to);
+                if(!mapped)continue;
+                const selected=after.slice(mapped.from,mapped.to);
+                const hash=selected===text?comment.selectedTextHash:await generateHash(selected);
+                // Hashing can yield to a newer editor transaction; never overwrite its anchors.
+                const live=this.getEditorTextForFile(path);
+                if(comment.absoluteFrom!==from||comment.absoluteTo!==to||comment.selectedText!==text||live!==null&&live!==before&&live!==after){this.pendingAnchorSaves.add(path);this.scheduleAnchorCheck(path);return;}
+                Object.assign(comment,rebindComment(comment,after,mapped.from,mapped.to,hash),{anchorSourceFingerprint:sourceFingerprint(after)});
             }
-            await this.commentManager.updateCommentCoordinatesForFile(after,path);
+            const validation=this.commentManager.getCommentsForFile(path).map(target=>({target,value:{...target}}));
+            const candidates=validation.map(({value})=>({...value}));
+            await new CommentManager(candidates).updateCommentCoordinatesForFile(after,path);
+            const currentSource=this.getEditorTextForFile(path);
+            if(currentSource!==null&&currentSource!==before&&currentSource!==after||validation.some(({target,value})=>JSON.stringify(target)!==JSON.stringify(value))){this.pendingAnchorSaves.add(path);this.scheduleAnchorCheck(path);return;}
+            validation.forEach(({target},i)=>Object.assign(target,candidates[i]));
             if(anchors.length)try{await this.saveCommentsForSingleFile(path);this.pendingAnchorSaves.delete(path);}catch(error){
                 // The source is already committed. Keep the deterministic new anchors in memory.
                 this.pendingAnchorSaves.add(path);this.scheduleAnchorCheck(path,true);new Notice(`原文已同步，批注坐标保存待重试：${String(error)}`);throw error;
@@ -1676,16 +1686,19 @@ export default class SideNote extends MindmapPluginBase {
             if(this.unloading)return;
             try{
                 const source=this.getEditorTextForFile(file.path)??await this.app.vault.read(file);
-                const result=migrateMarkdownMetadata(source,file.basename);if(!result)continue;
+                const record=this.markdownMaps.get(file.path);
+                const result=repairMindmapMarkdown(source,file.basename,record,this.rootRule());if(!result)continue;
                 // Recheck in Vault.process; concurrent user edits are never overwritten.
-                await this.markdownMaps.set(file.path,{source:result.text,doc:result.doc,legacySource:source});
+                await this.markdownMaps.set(file.path,{source:result.text,doc:result.doc,legacySource:source,quoteGapRepair:1,quoteGapRepairBefore:source},JSON.stringify(record??null));
+                const pendingRecord=this.markdownMaps.get(file.path)!;
                 await this.commitMarkdownSync(file.path,source,result.text,result.spans,async guard=>{
                     await this.app.vault.process(file,disk=>{guard?.();if(disk!==source)throw Error('迁移期间原文已变化，已跳过');return result.text;});
                 });
-                migrated++;
+                await this.markdownMaps.set(file.path,{...pendingRecord,quoteGapRepairBefore:undefined},JSON.stringify(pendingRecord));
+                if(source!==result.text)migrated++;
             }catch(error){console.error('旧脑图标记迁移未完成，原数据已保留',file.path,error);}
         }
-        if(migrated)new Notice(`已迁移 ${migrated} 篇笔记的旧脑图标记，样式与批注已保留。`);
+        if(migrated)new Notice(`已修复 ${migrated} 篇脑图笔记的旧标记及引用前空行，样式与批注已保留。`);
     }
     preferences: Preferences = { filter: {}, presets: [] };
     drafts: DraftStore;
