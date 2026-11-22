@@ -206,6 +206,8 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await bar.getByRole('button',{name:'应用上次颜色',exact:true}).click();
    await page.waitForFunction(()=>window.__testDoc.root.children.find(n=>n.id==='edit').text.startsWith('<span style="color:#dc2626">苹果</span>'));
    await page.keyboard.press('Escape');
+   await bar.waitFor({state:'hidden'});
+   await editor.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
    assert.equal(await bar.count(),0);
    await page.locator('textarea.wm-otext').first().click();
    const color=await page.locator('.wm-outline span[style*="color"]').first().evaluate(el=>getComputedStyle(el).color);

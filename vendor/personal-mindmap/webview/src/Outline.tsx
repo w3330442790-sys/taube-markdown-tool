@@ -146,6 +146,7 @@ function OutlineRow({
 }) {
   const [draft, setDraft] = useState(topic.text);
   const [formatBar, setFormatBar] = useState(false);
+  const selectionRevision=useRef(0);
   const preview=useRef<HTMLDivElement>(null),input=useRef<HTMLTextAreaElement|null>(null);
   const rich=isRichText(topic.text)&&!active;
   useEffect(()=>{if(preview.current)fillRichElement(preview.current,topic.text,{renderMath:host?.renderMath,resolveImage:host?.resolveResource});},[topic.text,rich,host]);
@@ -161,10 +162,10 @@ function OutlineRow({
     if(result.text===draft)return;
     setDraft(result.text);
     onCommit(result.text);
+    const revision=++selectionRevision.current;
     requestAnimationFrame(() => {
       const el = input.current;
-      if (!el) return;
-      el.focus({ preventScroll: true });
+      if(!el||el.ownerDocument.activeElement!==el||selectionRevision.current!==revision)return;
       el.setSelectionRange(result.start, result.end);
       setFormatBar(result.start!==result.end);
     });
@@ -187,6 +188,7 @@ function OutlineRow({
         onSelect={e=>setFormatBar(!readOnly&&e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
         onPointerUp={e=>setFormatBar(!readOnly&&e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
         onBlur={() => {
+          selectionRevision.current++;
           setFormatBar(false);
           if (draft !== topic.text) onCommit(draft);
         }}
@@ -194,6 +196,8 @@ function OutlineRow({
           if (e.key === "Escape" && formatBar) {
             e.preventDefault();
             e.stopPropagation();
+            selectionRevision.current++;
+            e.currentTarget.setSelectionRange(e.currentTarget.selectionEnd,e.currentTarget.selectionEnd);
             setFormatBar(false);
             return;
           }
