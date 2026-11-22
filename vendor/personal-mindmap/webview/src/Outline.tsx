@@ -1,7 +1,8 @@
 // 大纲视图:可编辑的缩进列表,快捷键与画布一致(Enter 同级、Tab 缩进、Shift+Tab 反缩进)
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as ops from "../../src/core/ops";
-import { applyInlineFormat, INLINE_ORANGE, INLINE_RED, type InlineFormat } from "../../src/core/inline-format";
+import { applyInlineFormat, type InlineFormat } from "../../src/core/inline-format";
+import { TopicFormatBar } from "./TopicFormatBar";
 import { indexDoc } from "../../src/core/query";
 import type { MindDoc, Topic } from "../../src/core/types";
 import type { Actions } from "./App";
@@ -26,104 +27,6 @@ function flatten(doc: MindDoc): Row[] {
   return rows;
 }
 
-interface FormatBarState { x: number; y: number; start: number; end: number }
-
-const FORMAT_BUTTONS: Array<{ id: InlineFormat; label: string; dot?: string; marker?: string }> = [
-  { id: "red", label: "标红", dot: INLINE_RED },
-  { id: "orange", label: "橙色", dot: INLINE_ORANGE },
-  { id: "highlight", label: "高亮", marker: "==" },
-  { id: "bold", label: "加粗", marker: "B" },
-  { id: "clear-color", label: "清除颜色" },
-];
-
-function OutlineFormatBar({ state, onPick, onClose }: { state: FormatBarState; onPick: (format: InlineFormat) => void; onClose: () => void }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ x: state.x, y: state.y });
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    setPos({
-      x: Math.max(6, Math.min(state.x, window.innerWidth - rect.width - 6)),
-      y: Math.max(6, Math.min(state.y, window.innerHeight - rect.height - 6)),
-    });
-  }, [state.x, state.y]);
-  useEffect(() => {
-    const outside = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) onClose();
-    };
-    const key = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      onClose();
-    };
-    window.addEventListener("pointerdown", outside, true);
-    window.addEventListener("keydown", key, true);
-    return () => {
-      window.removeEventListener("pointerdown", outside, true);
-      window.removeEventListener("keydown", key, true);
-    };
-  }, [onClose]);
-  const base: CSSProperties = {
-    position: "fixed",
-    left: pos.x,
-    top: pos.y,
-    zIndex: 1000,
-    display: "flex",
-    alignItems: "center",
-    gap: 3,
-    padding: 5,
-    color: "var(--wm-fg, #24292f)",
-    background: "var(--wm-pop, #fff)",
-    border: "1px solid var(--wm-border, rgba(128,128,128,.35))",
-    borderRadius: 8,
-    boxShadow: "var(--wm-shadow, 0 8px 24px rgba(0,0,0,.16))",
-    font: "13px var(--wm-font, sans-serif)",
-    flexWrap: "wrap",
-    maxWidth: "calc(100vw - 12px)",
-  };
-  return (
-    <div
-      ref={ref}
-      className="wm-outline-formatbar"
-      role="toolbar"
-      aria-label="文字格式工具栏"
-      style={base}
-      onMouseDown={(event) => event.preventDefault()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      {FORMAT_BUTTONS.map((format) => (
-        <button
-          key={format.id}
-          type="button"
-          className={"wm-format-btn" + (format.dot ? " wm-format-color" : "")}
-          aria-label={format.label}
-          title={format.label}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => onPick(format.id)}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            padding: "4px 7px",
-            border: "1px solid transparent",
-            borderRadius: 5,
-            background: "transparent",
-            cursor: "pointer",
-            whiteSpace: "nowrap",
-            font: "inherit",
-          }}
-        >
-          {format.dot && <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: 99, background: format.dot, display: "inline-block" }} />}
-          {format.marker && <span aria-hidden="true" style={{ fontWeight: format.marker === "B" ? 700 : 600, textDecoration: format.marker === "==" ? "underline" : undefined }}>{format.marker}</span>}
-          {format.label}
-        </button>
-      ))}
-      <button type="button" aria-label="关闭文字格式工具栏" title="关闭" onMouseDown={(event) => event.preventDefault()} onClick={onClose} style={{ border: 0, background: "transparent", cursor: "pointer", padding: "4px 5px", fontSize: 15, lineHeight: 1, font: "inherit" }}>×</button>
-    </div>
-  );
-}
 
 export function Outline({ actions: a,docked,wrap,host }: { actions: Actions;docked?:boolean;wrap?:boolean;host?:Host }) {
   const rows = flatten(a.doc);
@@ -242,24 +145,20 @@ function OutlineRow({
   onKey: (e: React.KeyboardEvent<HTMLTextAreaElement>, draft: string) => void;
 }) {
   const [draft, setDraft] = useState(topic.text);
-  const [formatBar, setFormatBar] = useState<FormatBarState | null>(null);
+  const [formatBar, setFormatBar] = useState(false);
   const preview=useRef<HTMLDivElement>(null),input=useRef<HTMLTextAreaElement|null>(null);
   const rich=isRichText(topic.text)&&!active;
   useEffect(()=>{if(preview.current)fillRichElement(preview.current,topic.text,{renderMath:host?.renderMath,resolveImage:host?.resolveResource});},[topic.text,rich,host]);
   useEffect(() => setDraft(topic.text), [topic.text]);
   useEffect(() => {
-    if (!active || readOnly) setFormatBar(null);
+    if (!active || readOnly) setFormatBar(false);
   }, [active, readOnly]);
   const hasKids = !!topic.children?.length;
   const applyFormat = (format: InlineFormat) => {
-    const bar = formatBar;
-    if (!bar) return;
-    const result = applyInlineFormat(draft, bar.start, bar.end, format);
-    setFormatBar(null);
-    if (result.text === draft) {
-      requestAnimationFrame(() => input.current?.focus());
-      return;
-    }
+    const field=input.current;
+    if(!formatBar||!field||field.selectionStart===field.selectionEnd)return;
+    const result=applyInlineFormat(draft,field.selectionStart,field.selectionEnd,format,true);
+    if(result.text===draft)return;
     setDraft(result.text);
     onCommit(result.text);
     requestAnimationFrame(() => {
@@ -267,6 +166,7 @@ function OutlineRow({
       if (!el) return;
       el.focus({ preventScroll: true });
       el.setSelectionRange(result.start, result.end);
+      setFormatBar(result.start!==result.end);
     });
   };
   return (
@@ -282,35 +182,26 @@ function OutlineRow({
         value={draft}
         readOnly={readOnly}
         placeholder={t("emptyText")}
-        title={readOnly ? undefined : "选中文字后右键，可标红或设置格式"}
         onFocus={onFocus}
-        onChange={(e) => { setDraft(e.target.value); setFormatBar(null); }}
-        onContextMenu={(e) => {
-          if (readOnly) return;
-          const el = e.currentTarget;
-          const start = el.selectionStart ?? 0;
-          const end = el.selectionEnd ?? 0;
-          if (start === end) return;
-          e.preventDefault();
-          e.stopPropagation();
-          setFormatBar({ x: e.clientX, y: e.clientY, start, end });
-        }}
+        onChange={(e) => { setDraft(e.target.value); setFormatBar(false); }}
+        onSelect={e=>setFormatBar(!readOnly&&e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
+        onPointerUp={e=>setFormatBar(!readOnly&&e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
         onBlur={() => {
-          setFormatBar(null);
+          setFormatBar(false);
           if (draft !== topic.text) onCommit(draft);
         }}
         onKeyDown={(e) => {
           if (e.key === "Escape" && formatBar) {
             e.preventDefault();
             e.stopPropagation();
-            setFormatBar(null);
+            setFormatBar(false);
             return;
           }
           onKey(e, draft);
         }}
       />
       {rich&&<div ref={preview} role="button" tabIndex={0} style={{flex:1,minWidth:0,padding:'5px 4px',whiteSpace:wrap===false?'nowrap':'normal',overflow:'hidden',textOverflow:'ellipsis',cursor:'text'}} onClick={()=>{onFocus();requestAnimationFrame(()=>input.current?.focus());}} onKeyDown={event=>{if(event.key==='Enter'){onFocus();requestAnimationFrame(()=>input.current?.focus());}}}/>}
-      {formatBar && <OutlineFormatBar state={formatBar} onPick={applyFormat} onClose={() => setFormatBar(null)} />}
+      {active&&!readOnly&&formatBar&&<TopicFormatBar editor={input} apply={applyFormat} fixed />}
     </div>
   );
 }

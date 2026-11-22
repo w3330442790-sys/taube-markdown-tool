@@ -354,19 +354,21 @@ export function App({ host }: { host: Host }) {
     return null;
   };
 
-  const startEdit = (id: string, initial?: string) => {
+  const startEdit = (id: string, initial?: string, forceSelect=false) => {
     const d = docRef.current;
     if (!d || readOnly) return;
     const cur = textOf(d, id);
     if (cur === null) return;
     setSelection([id]);
-    setEditing({ id, value: initial ?? cur, selectAll: initial === undefined && host.editorSettings?.editCaret!=="end" });
+    const selectAll=initial===undefined&&(forceSelect||host.editorSettings?.editCaret!=="end");
+    setEditing({ id, value: initial ?? cur, selectAll });
     requestAnimationFrame(() => {
       const el = captureRef.current;
-      if (!el) return;
+      if (!el||editingRef.current?.id!==id) return;
       el.focus({ preventScroll: true });
-      if (initial === undefined && host.editorSettings?.editCaret!=="end") el.select();
+      if (selectAll) el.select();
       else el.setSelectionRange(el.value.length, el.value.length);
+      setHasTextSelection(el.selectionStart!==el.selectionEnd);
     });
     reveal(id);
   };
@@ -613,11 +615,12 @@ export function App({ host }: { host: Host }) {
     const current=editingRef.current,editor=captureRef.current;
     if(!current||!editor||readOnly||composing.current||editor.selectionStart===editor.selectionEnd)return;
     const result=applyInlineFormat(current.value,editor.selectionStart,editor.selectionEnd,format,true);
-    if(result.text===current.value){if(format!=="clear-color")notify(t("inlineFormatBoundary"));return;}
+    if(result.text===current.value&&result.start===editor.selectionStart&&result.end===editor.selectionEnd)return;
     setEditing({...current,value:result.text});setLinkChoices(null);
     requestAnimationFrame(()=>{
       if(editingRef.current?.id!==current.id||captureRef.current!==editor)return;
       editor.focus();editor.setSelectionRange(result.start,result.end);
+      setHasTextSelection(result.start!==result.end);
     });
   };
 
@@ -875,7 +878,7 @@ export function App({ host }: { host: Host }) {
         setSelection([...s]);
       }
     },
-    startEdit: (id) => startEdit(id),
+    startEdit: (id, selectAll) => startEdit(id, undefined, selectAll),
     toggleFold: (id) => toggleFold([id]),
     openLink,
     openTarget(target){host.post({type:"openLink",target});},
@@ -1204,6 +1207,7 @@ export function App({ host }: { host: Host }) {
             spellCheck={false}
             aria-label="topic text"
             onSelect={e=>setHasTextSelection(e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
+            onPointerUp={e=>setHasTextSelection(e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
             onCompositionStart={() => {
               composing.current = true;
               if (!editingRef.current && targetId && !readOnly) setEditing({ id: targetId, value: "", selectAll: false });

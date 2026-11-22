@@ -121,7 +121,7 @@ function toggleColor(text: string, start: number, end: number, color: string, se
   const span = enclosingColor(text, start, end);
   if (span) {
     if(selectionOnly&&start>=span.contentStart){
-      return replaceColorRange(text,start,end,span.color===color?undefined:color,span);
+      return span.color===color?{text,start,end}:replaceColorRange(text,start,end,color,span);
     }
     const inner = text.slice(span.contentStart, span.contentEnd);
     const oldOpen = text.slice(span.openStart, span.contentStart);
@@ -144,6 +144,7 @@ function toggleColor(text: string, start: number, end: number, color: string, se
   if (exact) {
     const inner = exact[2];
     if (exact[1].toLowerCase() === color.toLowerCase()) {
+      if(selectionOnly)return {text,start:start+exact[0].length-inner.length-"</span>".length,end:end-"</span>".length};
       return { text: text.slice(0, start) + inner + text.slice(end), start, end: start + inner.length };
     }
     const replacement = colorSpan(color, inner);

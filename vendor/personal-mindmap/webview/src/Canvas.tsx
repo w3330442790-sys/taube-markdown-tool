@@ -27,7 +27,7 @@ export interface CanvasApi {
   resizeRange(id:string,which:'from'|'to',anchor:string):void;
   setWidth(id:string,width:number):void;
   select(ids: string[], mode?: "replace" | "toggle" | "add"): void;
-  startEdit(id: string): void;
+  startEdit(id: string, selectAll?:boolean): void;
   toggleFold(id: string): void;
   openLink(id: string): void;
   openTarget(target:string):void;
@@ -414,7 +414,7 @@ export function Canvas({ doc, scene, selection, linkingFrom, readOnly, viewport,
     }
     if(kind==='note-card'){api.openNote(id,true);return;}
     if(kind==='note-resize'){api.resizeNote(id,320,240);return;}
-    if (kind === "topic" || kind === "summary" || kind === "rel" || kind === "boundary") api.startEdit(id);
+    if (kind === "topic" || kind === "summary" || kind === "rel" || kind === "boundary") api.startEdit(id,kind==="topic");
   };
 
   const onContextMenu = (e: React.MouseEvent) => {

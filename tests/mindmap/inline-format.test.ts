@@ -17,6 +17,7 @@ test("canvas selection can layer and toggle regular formats without changing sur
 test("canvas recolor and clear only change the selected part of a colored phrase",()=>{
   const source=`前<span style="color:${INLINE_RED}">红色文字</span>后`;
   const start=source.indexOf("色文");
+  assert.equal(applyInlineFormat(source,start,start+2,"red",true).text,source);
   const recolored=applyInlineFormat(source,start,start+2,"blue",true);
   assert.equal(recolored.text,`前<span style="color:${INLINE_RED}">红</span><span style="color:#2563eb">色文</span><span style="color:${INLINE_RED}">字</span>后`);
   assert.equal(recolored.text.slice(recolored.start,recolored.end),"色文");

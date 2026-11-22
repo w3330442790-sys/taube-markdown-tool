@@ -2638,7 +2638,7 @@ body .wm-root .wm-topic-format {
   z-index: 9;
   display: flex;
   gap: 2px;
-  width: min(252px, calc(100% - 16px));
+  width: min(284px, calc(100% - 16px));
   padding: 4px;
   box-sizing: border-box;
   border: 1px solid #52525b;
@@ -2683,18 +2683,13 @@ body .wm-root .wm-topic-format-highlight span {
   padding: 1px 3px;
   border-bottom: 3px solid #ffe16a;
 }
-body .wm-root .wm-topic-format .wm-topic-format-colors {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-}
-body .wm-root .wm-topic-format-colors span:first-child {
+body .wm-root .wm-topic-format-quick-color span {
   padding-bottom: 2px;
-  border-bottom: 3px solid #f87171;
+  border-bottom: 3px solid;
 }
-body .wm-root .wm-topic-format-colors span:last-child {
-  font-size: 12px;
+body .wm-root .wm-topic-format .wm-topic-format-colors {
+  flex: .65;
+  font-size: 13px;
 }
 body .wm-root .wm-topic-format-palette {
   position: absolute;

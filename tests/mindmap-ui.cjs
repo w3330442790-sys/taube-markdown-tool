@@ -195,16 +195,15 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
  await check('docked outline can be toggled beside the canvas',async()=>{
    await command(page,'toggleOutline');await page.getByLabel('大纲面板',{exact:true}).waitFor();assert.ok(await page.locator('.wm-canvas').isVisible());await command(page,'toggleOutline');assert.equal(await page.getByLabel('大纲面板',{exact:true}).count(),0);
  });
- await check('outline selection offers a right-click red-format toolbar',async()=>{
+ await check('outline selection opens the toolbar without right-click and applies the default red',async()=>{
    await command(page,'toggleOutline');await page.getByLabel('大纲面板',{exact:true}).waitFor();
    const index=await page.locator('textarea.wm-otext').evaluateAll((nodes,needle)=>nodes.findIndex(node=>node.value.includes(needle)),'苹果');
    assert.ok(index>=0);
    const editor=page.locator('textarea.wm-otext').nth(index);
    await editor.click();
-   await editor.evaluate(el=>{el.focus();el.setSelectionRange(0,2);});
-   await editor.dispatchEvent('contextmenu',{bubbles:true,cancelable:true,button:2,clientX:260,clientY:220});
-   const bar=page.getByRole('toolbar',{name:'文字格式工具栏'});await bar.waitFor();
-   await bar.getByRole('button',{name:'标红',exact:true}).click();
+   await editor.press('Home');await editor.press('Shift+ArrowRight');await editor.press('Shift+ArrowRight');
+   const bar=page.getByRole('toolbar',{name:'选中文字格式'});await bar.waitFor();
+   await bar.getByRole('button',{name:'应用上次颜色',exact:true}).click();
    await page.waitForFunction(()=>window.__testDoc.root.children.find(n=>n.id==='edit').text.startsWith('<span style="color:#dc2626">苹果</span>'));
    await page.keyboard.press('Escape');
    assert.equal(await bar.count(),0);
@@ -212,6 +211,15 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    const color=await page.locator('.wm-outline span[style*="color"]').first().evaluate(el=>getComputedStyle(el).color);
    assert.equal(color,'rgb(220, 38, 38)');
    await command(page,'toggleOutline');
+ });
+ await check('double-click selects the entire canvas node and opens formatting without a right-click',async()=>{
+   await page.locator('.wm-topic[data-id="edit"]').dblclick();
+   const editor=page.getByLabel('topic text');
+   await page.getByRole('toolbar',{name:'选中文字格式'}).waitFor();
+   assert.ok(await editor.evaluate(el=>el.selectionStart===0&&el.selectionEnd===el.value.length&&el.value.length>0));
+   await editor.press('ArrowRight');
+   await page.getByRole('toolbar',{name:'选中文字格式'}).waitFor({state:'hidden'});
+   await editor.press('Escape');
  });
  await check('display-only note cards resize and fold without mutating content',async()=>{
    const before=await page.evaluate(()=>JSON.stringify(window.__testDoc));await command(page,'toggleNotes');
@@ -254,6 +262,7 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await page.waitForFunction(()=>document.querySelector('[aria-label="topic text"]').selectionStart===11);
    await bar.getByRole('button',{name:'文字颜色',exact:true}).click();
    await bar.getByRole('button',{name:'标蓝',exact:true}).click();
+   assert.equal(await page.evaluate(()=>localStorage.getItem('wmind-last-inline-color')),'blue');
    await editor.press('Enter');
    const topic=page.locator('.wm-topic[data-id="edit"]');
    const styled=topic.locator('strong em u span').getByText('重点',{exact:true});
@@ -262,6 +271,20 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    assert.equal(await topic.locator('strong').textContent(),'重点');
    assert.equal(await topic.locator('.wm-rich-topic').textContent(),'前文重点后文');
    assert.deepEqual(await page.evaluate(()=>window.__testDoc.relationships),links);
+   await topic.dblclick();
+   await editor.fill('前文颜色后文');
+   await editor.press('Home');
+   await editor.press('ArrowRight');await editor.press('ArrowRight');
+   await editor.press('Shift+ArrowRight');await editor.press('Shift+ArrowRight');
+   const quickColor=bar.getByRole('button',{name:'应用上次颜色',exact:true});
+   assert.equal(await quickColor.locator('span').evaluate(el=>getComputedStyle(el).borderBottomColor),'rgb(37, 99, 235)');
+   await quickColor.click();
+   await quickColor.click();
+   assert.equal(await bar.getByRole('group',{name:'文字颜色'}).count(),0);
+   await editor.press('Enter');
+   const recolored=topic.locator('span[style*="color"]').getByText('颜色',{exact:true});
+   await recolored.waitFor();
+   assert.match(await recolored.getAttribute('style'),/rgb\(37, 99, 235\)/);
  });
  await check('note popover callback writes the selected note and notebook picker creates a link',async()=>{
    await page.locator('[data-id="notes"] [data-kind="note-icon"]').click();
