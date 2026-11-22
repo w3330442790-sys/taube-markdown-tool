@@ -1,6 +1,35 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { runInNewContext } from "node:vm";
+import { build } from "esbuild";
 const {embedCssResources, jpegToPdf}=require("../../vendor/personal-mindmap/webview/src/export");
+test("desktop PDF saves through the Obsidian CommonJS loader after the dialog",async()=>{
+  const result=await build({
+    entryPoints:["vendor/personal-mindmap/src/obsidian/pdf-save.ts"],
+    bundle:true,write:false,format:"cjs",platform:"browser",
+    external:["obsidian","fs","node:fs/promises"],
+  });
+  const destination="C:\\exports\\map.pdf";
+  const bytes=new Uint8Array([37,80,68,70]);
+  const writes:unknown[][]=[];
+  let canceled=true;
+  const module={exports:{} as typeof import("../../vendor/personal-mindmap/src/obsidian/pdf-save")};
+  runInNewContext(result.outputFiles[0].text,{
+    module,
+    window:{electron:{remote:{dialog:{showSaveDialog:async()=>({canceled,filePath:destination})}}}},
+    require(id:string){
+      if(id==="obsidian")return {Platform:{isDesktopApp:true},Notice:class {}};
+      if(id==="fs")return {promises:{writeFile:async(...args:unknown[])=>{writes.push(args);}}};
+      throw new Error(`Unexpected module: ${id}`);
+    },
+  });
+  const app={} as Parameters<typeof module.exports.saveMindmapPdf>[0];
+  await module.exports.saveMindmapPdf(app,"map.pdf",bytes);
+  assert.deepEqual(writes,[]);
+  canceled=false;
+  await module.exports.saveMindmapPdf(app,"map.pdf",bytes);
+  assert.deepEqual(writes,[[destination,bytes]]);
+});
 test("PDF export keeps the full image at its aspect ratio and writes byte-correct xref offsets",()=>{
   const pdf=jpegToPdf(new Uint8Array([255,216,255,217]),1600,900);
   const source=Buffer.from(pdf).toString("latin1");

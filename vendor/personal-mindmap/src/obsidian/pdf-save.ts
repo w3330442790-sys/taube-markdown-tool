@@ -10,8 +10,8 @@ export async function saveMindmapPdf(app:App,name:string,bytes:Uint8Array<ArrayB
   if(dialog){
     const destination=await dialog.showSaveDialog({defaultPath:name,filters:[{name:'PDF',extensions:['pdf']}],properties:['showOverwriteConfirmation']});
     if(destination.canceled||!destination.filePath)return;
-    const {writeFile}=await import('node:fs/promises');
-    await writeFile(destination.filePath,bytes);
+    const {promises}=require('fs') as typeof import('fs');
+    await promises.writeFile(destination.filePath,bytes);
     new Notice(`已导出 PDF：${destination.filePath}`);
     return;
   }
