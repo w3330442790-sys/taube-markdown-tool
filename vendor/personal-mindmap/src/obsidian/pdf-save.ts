@@ -21,10 +21,14 @@ export async function saveMindmapPdf(app:App,name:string,bytes:Uint8Array<ArrayB
     onChooseItem(folder:TFolder):void{
       void (async()=>{
         const stem=folder.isRoot()?name.slice(0,-4):`${folder.path}/${name.slice(0,-4)}`;
-        let path=`${stem}.pdf`;
-        for(let suffix=2;app.vault.getAbstractFileByPath(path);suffix++)path=`${stem} ${suffix}.pdf`;
-        await app.vault.createBinary(path,bytes.buffer);
-        new Notice(`已导出 PDF：${path}`);
+        for(let suffix=1;;suffix++){
+          const path=suffix===1?`${stem}.pdf`:`${stem} ${suffix}.pdf`;
+          if(await app.vault.adapter.exists(path))continue;
+          try{await app.vault.createBinary(path,bytes.buffer);}
+          catch(error){if(await app.vault.adapter.exists(path))continue;throw error;}
+          new Notice(`已导出 PDF：${path}`);
+          return;
+        }
       })().catch(error=>new Notice(`导出失败：${String(error)}`));
     }
   }
