@@ -4,6 +4,33 @@ import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses, syncMarkdownD
 import { applyInlineFormat } from '../../vendor/personal-mindmap/src/core/inline-format';
 import { projectTextMarks } from '../../vendor/personal-mindmap/src/fusion/text-marks';
 import { markedTopicText, parseRich } from '../../vendor/personal-mindmap/webview/src/rich';
+import { projectView } from '../../vendor/personal-mindmap/src/core/fusion-ops';
+
+test('a nested ordered topic saves tables and images under its own Markdown marker', () => {
+ const source='# Root\n\n- Parent\n  12. Target\n  13. Sibling\n';
+ const before=parseMarkdownDoc(source,'Root');
+ const edited=structuredClone(before);
+ const target=edited.root.children![0].children![0];
+ target.note='| A | B |\n| --- | --- |\n| 1 | 2 |\n\n![[photo.png]]';
+ const {text,doc}=syncMarkdownDoc(source,before,edited,'Root');
+ assert.match(text,/  12\. Target\n\n      \| A \| B \|[\s\S]+\n      !\[\[photo\.png\]\]\n  13\. Sibling/);
+ assert.equal(parseMarkdownDoc(text,'Root').root.children![0].children![0].note,target.note);
+ assert.equal(projectView(doc,{}).root.children![0].children![0].noteExpanded,true);
+ assert.equal(projectView(doc,{noteCards:{[target.id]:{collapsed:true}}}).root.children![0].children![0].noteExpanded,false);
+});
+
+test('a table between children and a trailing image appear on the parent without moving the source', () => {
+ const source='# Root\n\n- Parent\n  - First\n\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n\n  - Second\n\n  ![[tail.png]]\n- Next\n';
+ const doc=parseMarkdownDoc(source,'Root');
+ const parent=projectView(doc,{}).root.children![0];
+ assert.match(parent.note??'',/\| A \| B \|[\s\S]+!\[\[tail\.png\]\]/);
+ assert.equal(parent.noteExpanded,true);
+ assert.equal(syncMarkdownDoc(source,doc,doc,'Root').text,source);
+ const edited=structuredClone(doc);
+ edited.root.children![0].note='![[new.png]]';
+ const {text}=syncMarkdownDoc(source,doc,edited,'Root');
+ assert.equal(text,source.replace('- Parent\n','- Parent\n\n  ![[new.png]]\n'));
+});
 
 test('Markdown marks project onto exact topic text and stay out of the saved source', () => {
  const source='---\r\nname: test\r\n---\r\n# Root\r\n- **重点** 和普通文本\r\n- 重点\r\n';

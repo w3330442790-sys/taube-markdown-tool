@@ -141,5 +141,5 @@ export function RichTopic({topicId,text,x,y,w,h,font,lineHeight,align,color,stri
     if(markdown&&env.renderMarkdown&&!env.studyMode&&!env.clozeMode){el.replaceChildren();return env.renderMarkdown(text,el);}
     fillRichElement(el,text,{...env,topicId});
   },[text,env,topicId,markdown]);
-  return <foreignObject x={x} y={y} width={w} height={h} overflow="visible"><div ref={ref} {...({xmlns:"http://www.w3.org/1999/xhtml"} as Record<string,string>)} className="wm-rich-topic" style={{...richCss(font,lineHeight,align),color,width:w,...(markdown?{height:h,overflow:"auto",whiteSpace:hostedMarkdown?"normal" as const:"pre-wrap" as const}:{}),textDecoration:strike ? "line-through" : undefined}} /></foreignObject>;
+  return <foreignObject x={x} y={y} width={w} height={h} overflow="visible"><div ref={ref} {...({xmlns:"http://www.w3.org/1999/xhtml"} as Record<string,string>)} className={hostedMarkdown?"wm-rich-topic markdown-rendered":"wm-rich-topic"} style={{...richCss(font,lineHeight,align),color,width:w,...(markdown?{height:h,overflow:"auto",whiteSpace:hostedMarkdown?"normal" as const:"pre-wrap" as const}:{}),textDecoration:strike ? "line-through" : undefined}} /></foreignObject>;
 }

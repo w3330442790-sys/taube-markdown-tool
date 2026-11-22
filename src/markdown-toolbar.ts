@@ -2,6 +2,7 @@ import { Editor, MarkdownView, Notice, setIcon } from 'obsidian';
 import type { EditorView } from '@codemirror/view';
 import { isClozeHidden, toggleCloze } from './cloze';
 import { createDocumentSearch } from './document-search';
+import { MARKDOWN_TABLE_TEMPLATE } from '../vendor/personal-mindmap/src/core/markdown-assets';
 
 export type MarkdownFormatCommand =
     | 'bold' | 'italic' | 'strikethrough' | 'highlight' | 'inline-code'
@@ -375,6 +376,20 @@ function planLink(text: string, from: number, to: number): CommandPlan {
 
 function planTable(text: string, from: number): CommandPlan {
     const lineStart = lineStartOf(text, from);
+    const lineEnd = lineEndOf(text, from);
+    const newline = text.includes('\r\n') ? '\r\n' : '\n';
+    const contentEnd = text[lineEnd - 1] === '\r' ? lineEnd - 1 : lineEnd;
+    const line = text.slice(lineStart, contentEnd);
+    const marker = /^([ \t]*)(?:[-*+]|\d{1,9}[.)])([ \t]+)/.exec(line);
+    if (marker || HEADING_MARKER.test(line)) {
+        // Continue a list at its content column, including the full ordered marker.
+        const indent = marker ? marker[1] + ' '.repeat(marker[0].length - marker[1].length) : '';
+        const table = MARKDOWN_TABLE_TEMPLATE.split('\n').map(row => indent + row).join(newline);
+        const prefix = newline + newline;
+        const suffix = lineEnd < text.length && !/^\r?\n/.test(text.slice(lineEnd + 1)) ? newline : '';
+        const cursor = contentEnd + prefix.length + indent.length + 2;
+        return finalize(text, [{from:contentEnd,to:contentEnd,insert:prefix + table + suffix}], cursor, cursor);
+    }
     const midLine = from > lineStart && from < lineEndOf(text, from);
     const position = midLine ? lineStart : from;
     let prefix = '';
@@ -383,7 +398,7 @@ function planTable(text: string, from: number): CommandPlan {
         if (!(text.slice(0, position) + prefix).endsWith('\n\n')) prefix += '\n';
     }
     const suffix = position < text.length && text[position] !== '\n' ? '\n' : '';
-    const table = '| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |';
+    const table = MARKDOWN_TABLE_TEMPLATE;
     const insert = prefix + table + suffix;
     const cursor = position + prefix.length + 2;
     return finalize(text, [{ from: position, to: position, insert }], cursor, cursor);

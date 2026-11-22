@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import { docLook, parse, serialize, type ParseError } from "../../src/core/doc";
 import * as ops from "../../src/core/ops";
-import { deleteOnly, splitIntoChildren, projectView, setFoldLevel, resizeRange, isAnswer, isQuestion } from "../../src/core/fusion-ops";
+import { deleteOnly, splitIntoChildren, projectView, setFoldLevel, resizeRange, isAnswer, isQuestion, topicNotePreview } from "../../src/core/fusion-ops";
+import { hasMarkdownAssets, MARKDOWN_TABLE_TEMPLATE } from "../../src/core/markdown-assets";
 import { RichEnvironment, registerRichRenderer } from "./RichTopic";
 import { emojiMarkerGroups, hasEmojiMarker, toggleEmojiMarker, type EmojiMarkerGroup } from "../../src/core/emoji-markers";
 import { OpError } from "../../src/core/ops";
@@ -604,6 +605,7 @@ export function App({ host }: { host: Host }) {
       for(const file of files)links.push(await host.saveBinary(file.name||`image-${Date.now()}.png`,await file.arrayBuffer(),file.type));
       const d=docRef.current,tp=d&&getTopic(d,id);if(!d||!tp)return;
       commit(ops.updateTopic(d,id,{note:[tp.note,...links.map(link=>`![[${link}]]`)].filter(Boolean).join('\n\n')}));
+      setNoteCards(cards=>({...cards,[id]:{...cards[id],collapsed:false}}));
     }catch(error){notify(`图片插入失败：${error instanceof Error?error.message:String(error)}`);}
   };
   const insertLinkChoice = (choice:string) => {
@@ -890,7 +892,7 @@ export function App({ host }: { host: Host }) {
     toggleTask(id){const d=docRef.current;if(!d||readOnly)return;const tp=getTopic(d,id);if(tp&&/^\s*\[[ xX]\]\s/.test(tp.text))commit(ops.setText(d,id,tp.text.replace(/^(\s*\[)([ xX])(\])/,(_,a,state,b)=>a+(state===" "?"x":" ")+b)));},
     openNote(id,edit) {
       const source=docRef.current&&getTopic(docRef.current,id);if(studyMode&&source&&isAnswer(source)&&!revealed.has(id)){notify("请先揭晓答案再查看备注");return;}
-      if(showNotes&&!edit){setNoteCards(cards=>({...cards,[id]:{...cards[id],collapsed:!cards[id]?.collapsed}}));return;}
+      if(!edit&&source&&(showNotes||hasMarkdownAssets(topicNotePreview(source)))){setNoteCards(cards=>({...cards,[id]:{...cards[id],collapsed:!cards[id]?.collapsed}}));return;}
       setSelection([id]);
       if(host.editNote){const tp=docRef.current&&getTopic(docRef.current,id);if(tp)host.editNote(tp.note??"",text=>{const d=docRef.current;if(d&&getTopic(d,id))commit(ops.updateTopic(d,id,{note:text||undefined}));},readOnly);return;}
       setPanel(true);
@@ -950,6 +952,13 @@ export function App({ host }: { host: Host }) {
     if(command==="reveal"){revealStudy(id);return;}
     if(command==='fold'){toggleFold([id]);return;}
     if(command==='editNote'){canvasApi.openNote(id,true);return;}
+    if(command==='insertTable'){
+      if(tp&&!readOnly){
+        commit(ops.updateTopic(d,id,{note:[tp.note,MARKDOWN_TABLE_TEMPLATE].filter(Boolean).join('\n\n')}));
+        setNoteCards(cards=>({...cards,[id]:{...cards[id],collapsed:false}}));
+      }
+      return;
+    }
     if(command==="focus"){if(tp){setFocusId(id===d.root.id?null:id);setSelection([id]);requestAnimationFrame(()=>requestAnimationFrame(fit));}return;}
     if(command==="hide"){if(id!==d.root.id){if(readOnly)setHidden(v=>new Set([...v,id]));else commit(ops.updateTopic(d,id,{hidden:tp?.hidden?undefined:true}));}return;}
     if(command==="showAll"){setHidden(new Set());setShowHidden(v=>!v);return;}
@@ -1187,6 +1196,7 @@ export function App({ host }: { host: Host }) {
                 { icon: <Icon.minus />, label: tp?.hidden ? "取消隐藏分支" : "隐藏分支", disabled: ctxMenu.id === doc.root.id, run: () => feature("hide", ctxMenu.id) },
                 { icon: <Icon.topic />, label: "添加 / 编辑标注", disabled: readOnly, run: () => feature("callout", ctxMenu.id) },
                 { icon: <Icon.topic />, label: "查看 / 编辑备注", run: () => feature("editNote", ctxMenu.id) },
+                { icon: <Icon.topic />, label: "插入表格", disabled: readOnly, run: () => feature("insertTable", ctxMenu.id) },
                 { icon: <Icon.topic />, label: "标记", disabled: readOnly, run: () => feature("markers", ctxMenu.id) },
                 { icon: <Icon.topic />, label: "标注颜色", disabled: readOnly || !tp?.callout, run: () => feature("calloutColor", ctxMenu.id) },
                 { icon: <Icon.topic />, label: "节点宽度", disabled: readOnly, run: () => feature("width", ctxMenu.id) },

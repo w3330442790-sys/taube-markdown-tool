@@ -29,6 +29,20 @@ const server = http.createServer((req,res) => { res.setHeader('Content-Type','te
     await toolbar.getByRole('button',{name:'清除所选标记（保留批注）',exact:true}).click();
     assert.deepEqual(await page.evaluate(() => ({type:window.selectionPlugin.comments[0].markType,body:window.selectionPlugin.comments[0].comment,count:window.selectionPlugin.comments.length})), {type:'none',body:'保留批注正文',count:1});
     assert.equal(await page.evaluate(() => window.selectionPlugin.comments[0].color), '#dc2626');
+    await page.evaluate(() => window.openSelectionTools());
+    const preset = toolbar.locator('.sidenote-color-circle:not(.custom-color)').first();
+    const presetColor = await preset.evaluate(el => el.style.getPropertyValue('--circle-color').toLowerCase());
+    await preset.click();
+    await page.waitForFunction(color => window.selectionPlugin.comments[0].markType === 'text-color' && window.selectionPlugin.comments[0].color.toLowerCase() === color, presetColor);
+    await page.evaluate(() => window.openSelectionTools());
+    await toolbar.locator('input[type=color]').evaluate(input => {
+      input.value = '#27558a';
+      input.dispatchEvent(new Event('input', {bubbles:true}));
+      input.dispatchEvent(new Event('change', {bubbles:true}));
+    });
+    await page.waitForFunction(() => window.selectionPlugin.comments[0].markType === 'text-color' && window.selectionPlugin.comments[0].color === '#27558a');
+    await page.evaluate(() => window.openSelectionTools());
+    await toolbar.getByRole('button',{name:'文字标红',exact:true}).click();
     await page.evaluate(() => window.selectionSetup(false));
     assert.equal(await toolbar.count(), 0);
     await page.evaluate(() => window.openSelectionTools()); await toolbar.waitFor();

@@ -1077,6 +1077,12 @@ class CommentModal {
         colorPicker.type = 'color';
         colorPicker.className = 'sidenote-toolbar-color-picker';
         colorPicker.value = this.colorInput;
+        const selectTextColor = (value: string) => {
+            this.colorInput = value;
+            this.markType = 'text-color';
+            updateMarkButtons();
+            this.persistDraft();
+        };
 
         COLOR_PRESETS.forEach(color => {
             const circle = createEl('button');
@@ -1089,9 +1095,8 @@ class CommentModal {
             if (colorPicker.value.toLowerCase() === color.value.toLowerCase()) updateActiveCircle(circle);
             circle.onclick = () => {
                 colorPicker.value = color.value;
-                this.colorInput = color.value;
                 updateActiveCircle(circle);
-                this.persistDraft();
+                selectTextColor(color.value);
             };
             colorsWrapper.appendChild(circle);
         });
@@ -1105,12 +1110,11 @@ class CommentModal {
         customColorWrapper.tabIndex = 0;
         customColorWrapper.style.setProperty('--sidenote-custom-color', colorPicker.value);
         const updateCustomColor = () => {
-            this.colorInput = colorPicker.value;
             customColorWrapper.style.setProperty('--sidenote-custom-color', colorPicker.value);
             const matched = Array.from(colorsWrapper.querySelectorAll('.sidenote-color-circle:not(.custom-color)'))
                 .find(c => (c as HTMLElement).style.getPropertyValue('--circle-color').toLowerCase() === colorPicker.value.toLowerCase());
             updateActiveCircle(matched ? matched as HTMLElement : customColorWrapper);
-            this.persistDraft();
+            selectTextColor(colorPicker.value);
         };
         colorPicker.setAttribute('aria-label', '选择自定义颜色');
         colorPicker.oninput = updateCustomColor;
@@ -4519,15 +4523,16 @@ export default class SideNote extends MindmapPluginBase {
                     circle.type = 'button';
                     circle.className = 'sidenote-color-circle';
                     circle.style.setProperty('--circle-color', color.value);
-                    circle.title = color.name;
-                    circle.setAttribute('aria-label', color.name);
+                    circle.title = `文字颜色 · ${color.name}`;
+                    circle.setAttribute('aria-label', circle.title);
                     circle.setAttribute('aria-pressed', 'false');
                     if (colorPicker.value.toLowerCase() === color.value.toLowerCase()) {
                         updateActiveCircle(circle);
                     }
-                    circle.onclick = () => {
+                    circle.onclick = async () => {
                         colorPicker.value = color.value;
                         updateActiveCircle(circle);
+                        await plugin.handleAddCommentFromEditorView(this.view, 'text-color', color.value, true);
                     };
                     this.toolbar?.appendChild(circle);
                 });
@@ -4554,7 +4559,10 @@ export default class SideNote extends MindmapPluginBase {
                 };
                 colorPicker.setAttribute('aria-label', '选择自定义颜色');
                 colorPicker.oninput = updateCustomColor;
-                colorPicker.onchange = updateCustomColor;
+                colorPicker.onchange = async () => {
+                    updateCustomColor();
+                    await plugin.handleAddCommentFromEditorView(this.view, 'text-color', colorPicker.value, true);
+                };
                 customColorWrapper.onkeydown = (event: KeyboardEvent) => {
                     if (event.key !== 'Enter' && event.key !== ' ') return;
                     event.preventDefault();

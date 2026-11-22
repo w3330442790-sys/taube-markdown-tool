@@ -1,4 +1,5 @@
 import type { MindDoc, Topic, Range, Structure } from '../core/types';
+import { hasMarkdownAssets } from '../core/markdown-assets';
 import { parseMarkdown, serializeMarkdown, normalizeKinds, convertLevelKind, markerText, frontmatterValue, setFrontmatterValue, splitMarker, splitBlockId, type ParseOptions } from '../../vendor/gogoga/src/markdown';
 import { createNode, type MindDoc as MarkdownDoc, type MindNode } from '../../vendor/gogoga/src/model';
 import { preserveFormat, matchLines } from '../../vendor/gogoga/src/merge';
@@ -547,18 +548,36 @@ export function syncMarkdownDoc(source:string,previous:MindDoc,doc:MindDoc,title
         while(a<b&&(!pieces[a].trim()||/^\s*%%.*%%\s*$/.test(pieces[a])))a++;
         while(b>a&&!pieces[b-1].trim())b--;
         // A tail/lead belongs to the surrounding structure, not the edited note.
-        const meta=saved.node.markdown as SourceNode;
-        if(meta.tail||meta.lead)throw new Error('此节点含交错段落，请在 Markdown 中编辑备注；原文已保留。');
-        const noteIndent=n.kind==='list'?ws+tree.style.indent:'';
-        const indent=a<b?pieces[a].match(/^[ \t]*/)![0]:noteIndent;
-        pieces.splice(a,b-a,...(topic.note?topic.note.replace(/\r\n/g,'\n').split('\n').map(line=>(line?indent+line:'')+nl):[]));
-        if(topic.note&&!pieces[0].endsWith('\n'))pieces[0]+=nl;
+        const assets=hasMarkdownAssets(topic.note);
+        const noteIndent=n.kind==='list'?ws+(assets?' '.repeat((samePrefix?found[0]:prefix).trimStart().length):tree.style.indent):'';
+        if(assets&&!saved.node.note){
+          // Insert directly after the node marker, leaving any unrelated continuation untouched.
+          const afterMarker=n.kind==='heading'&&pieces[1]?.trim()&&splitMarker(pieces[1].trim()).text===''?2:1;
+          if(!pieces[afterMarker-1].endsWith('\n'))pieces[afterMarker-1]+=nl;
+          const lines=topic.note!.split(/\r?\n/).map(line=>(line?noteIndent+line:'')+nl);
+          if(pieces[afterMarker]?.trim())lines.push(nl);
+          pieces.splice(afterMarker,0,nl,...lines);
+        }else{
+          const meta=saved.node.markdown as SourceNode;
+          if(meta.tail||meta.lead)throw new Error('此节点含交错段落，请在 Markdown 中编辑备注；原文已保留。');
+          const existingIndent=a<b?pieces[a].match(/^[ \t]*/)![0]:noteIndent;
+          const indent=assets&&n.kind==='list'&&existingIndent.length<noteIndent.length?noteIndent:existingIndent;
+          const noteLines=topic.note?topic.note.split(/\r?\n/).map(line=>(line?indent+line:'')+nl):[];
+          if(assets&&a===1)noteLines.unshift(nl);
+          pieces.splice(a,b-a,...noteLines);
+          if(topic.note&&!pieces[0].endsWith('\n'))pieces[0]+=nl;
+        }
       }else if(n.kind==='list'&&oldKind==='list'){
         const oldWs=found[0].match(/^[ \t]*/)![0];
         if(oldWs!==ws)for(let i=1;i<pieces.length;i++)if(pieces[i].trim()&&pieces[i].startsWith(oldWs))pieces[i]=ws+pieces[i].slice(oldWs.length);
       }
       raw=pieces.join('');
-    }else raw=prefix+topic.text+(topic.blockId?' ^'+topic.blockId:'')+nl+(topic.note?topic.note.split(/\r?\n/).map(line=>(n.kind==='list'?ws+tree.style.indent:'')+line+nl).join(''):'');
+    }else{
+      const assets=hasMarkdownAssets(topic.note);
+      const indent=n.kind==='list'?ws+(assets?' '.repeat(prefix.trimStart().length):tree.style.indent):'';
+      const note=topic.note?.split(/\r?\n/).map(line=>(line?indent+line:'')+nl).join('')??'';
+      raw=prefix+topic.text+(topic.blockId?' ^'+topic.blockId:'')+nl+(assets?nl:'')+note;
+    }
     if(text&&!text.endsWith('\n'))text+=nl;
     if(saved)spans.push(...copiedSpans(saved.raw,raw,saved.start,text.length));
     text+=raw;rendered.push(topic);

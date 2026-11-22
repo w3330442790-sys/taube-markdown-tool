@@ -310,6 +310,17 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await page.getByLabel('topic text').focus();
    await page.evaluate(()=>{const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array([1,2,3])],'paste.png',{type:'image/png'}));document.querySelector('[aria-label="topic text"]').dispatchEvent(new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true}));});
    await page.waitForFunction(()=>window.__testDoc.root.children.find(n=>n.id==='notes').note.includes('![[attachments/paste.png]]'));
+   await page.locator('.wm-topic[data-id="notes"] [data-kind="note-card"]').waitFor({state:'attached'});
+ });
+ await check('inserting a table targets the chosen node and opens its note card',async()=>{
+   await command(page,'flush');
+   const target=page.locator('.wm-topic[data-id="detail"]');
+   await target.click({button:'right'});
+   await page.locator('.wm-ctx').getByRole('button',{name:'插入表格',exact:true}).click();
+   await page.waitForFunction(()=>window.__testDoc.root.children[0].children[1].children[0].note.includes('| --- | --- |'));
+   const card=target.locator('[data-kind="note-card"]');
+   await card.waitFor({state:'attached'});
+   assert.match(await card.locator('.wm-rich-topic').textContent(),/列 1/);
  });
  await check('autosave synchronization keeps typing active and flush commits before pane teardown',async()=>{
    await page.evaluate(()=>window.postMessage({type:'select',ids:['edit']},'*'));await command(page,'editNode');const editor=page.getByLabel('topic text');await editor.fill('尚未按回车的内容');await command(page,'syncPending');

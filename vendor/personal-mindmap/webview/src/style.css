@@ -1087,4 +1087,8 @@ textarea.wm-input {
 .wm-root .wm-rich-topic { user-select:none; }
 .wm-root .wm-rich-topic p { margin:0; }
 .wm-root .wm-rich-topic a { cursor:pointer; }
+.wm-root .wm-rich-topic img { max-width:100%; height:auto; }
+.wm-root .wm-rich-topic table { border-collapse:collapse; margin:0; }
+.wm-root .wm-rich-topic th,
+.wm-root .wm-rich-topic td { border:1px solid var(--background-modifier-border, #80808066); padding:3px 6px; }
 .wm-root [data-kind="reveal"] { cursor:pointer; }

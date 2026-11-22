@@ -1,6 +1,7 @@
 import type { MindDoc, Topic } from "./types";
 import { getTopic, indexDoc } from "./query";
 import { addChild, updateAt, findRange, updateRange } from "./ops";
+import { hasMarkdownAssets } from "./markdown-assets";
 
 /** Split prose while protecting Markdown tokens and numeric separators. */
 export function splitPunctuation(text: string): string[] {
@@ -36,6 +37,16 @@ export const isAnswer=(t:Topic)=>t.text.includes("ðŸ™ˆ")||t.markers?.includes("ð
 export const isQuestion=(t:Topic)=>!!t.children?.length&&t.children.every(c=>/^\s*\[[ xX]\]\s/.test(c.text));
 export interface NoteCardState {w?:number;h?:number;collapsed?:boolean}
 export interface ViewProjection {focusId?:string|null;hidden?:ReadonlySet<string>;studyMode?:boolean;revealed?:ReadonlySet<string>;showNotes?:boolean;showCallouts?:boolean;showHidden?:boolean;folds?:Record<string,boolean>;noteCards?:Record<string,NoteCardState>;noteMaxWidth?:number;noteMaxHeight?:number;}
+
+/** Markdown continuations after a child stay at their original position on disk. */
+export function topicNotePreview(topic: Topic): string | undefined {
+ const continuation = (child: Topic, side: 'lead' | 'tail') => {
+  const text = (child.markdown as { lead?: string; tail?: string } | undefined)?.[side];
+  return typeof text === 'string' && hasMarkdownAssets(text) ? text : undefined;
+ };
+ const parts=[topic.note,...(topic.children??[]).map(child=>continuation(child,'lead')),continuation(topic,'tail')].filter(Boolean);
+ return parts.length ? parts.join('\n\n') : undefined;
+}
 /** Projection is disposable: never serialize or commit its result. */
 export function projectView(doc:MindDoc,view:ViewProjection):MindDoc {
  const root=(view.focusId&&getTopic(doc,view.focusId))||doc.root;
@@ -46,7 +57,9 @@ export function projectView(doc:MindDoc,view:ViewProjection):MindDoc {
   const children=covered||option?.covered?[]:t.children?.filter(c=>!view.hidden?.has(c.id)&&(view.showHidden||!c.hidden)).map(c=>visit(c,question&&view.studyMode?{covered:questionCovered,shown:!questionCovered}:undefined));
   const visible=new Set(children?.map(c=>c.id));
   const card=view.noteCards?.[t.id];
-  return {...t,text:option?.covered?t.text.replace(/^(\s*\[)[xX](\])/,"$1 $2"):t.text,viewHidden:!!t.hidden,studyOption:!!option,studyShown:option?.shown,studyCorrect:!!option&&/^\s*\[[xX]\]/.test(t.text),collapsed:t===root&&view.focusId?undefined:(view.folds?.[t.id]??t.collapsed),studyQuestion:question,studyMultiple:question&&(t.children?.filter(c=>/^\s*\[[xX]\]/.test(c.text)).length??0)>1,noteExpanded:!!view.showNotes&&!card?.collapsed,noteWidth:card?.w??view.noteMaxWidth??320,noteHeight:card?.h,noteMaxHeight:view.noteMaxHeight??240,callout:view.showCallouts===false?undefined:t.callout,children,summaries:t.summaries?.filter(r=>visible.has(r.from)&&visible.has(r.to)),boundaries:t.boundaries?.filter(r=>visible.has(r.from)&&visible.has(r.to))};
+  const note=topicNotePreview(t);
+  const noteExpanded=(view.showNotes||hasMarkdownAssets(note))&&!card?.collapsed;
+  return {...t,text:option?.covered?t.text.replace(/^(\s*\[)[xX](\])/,"$1 $2"):t.text,viewHidden:!!t.hidden,studyOption:!!option,studyShown:option?.shown,studyCorrect:!!option&&/^\s*\[[xX]\]/.test(t.text),collapsed:t===root&&view.focusId?undefined:(view.folds?.[t.id]??t.collapsed),studyQuestion:question,studyMultiple:question&&(t.children?.filter(c=>/^\s*\[[xX]\]/.test(c.text)).length??0)>1,note,noteExpanded,noteWidth:card?.w??view.noteMaxWidth??320,noteHeight:card?.h,noteMaxHeight:view.noteMaxHeight??240,callout:view.showCallouts===false?undefined:t.callout,children,summaries:t.summaries?.filter(r=>visible.has(r.from)&&visible.has(r.to)),boundaries:t.boundaries?.filter(r=>visible.has(r.from)&&visible.has(r.to))};
  };
  const result={...doc,root:visit(root),floating:root===doc.root?doc.floating?.filter(t=>!view.hidden?.has(t.id)&&(view.showHidden||!t.hidden)).map(t=>visit(t)):undefined};
  const visible=indexDoc(result);result.relationships=doc.relationships?.filter(r=>visible.has(r.from)&&visible.has(r.to));return result;

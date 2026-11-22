@@ -189,6 +189,16 @@ test('link wraps a selection and selects the placeholder URL; caret inserts an e
   assert.equal(inserted.slice(caret.anchor, caret.head), 'https://');
 });
 
+test('table insertion belongs to the heading or nested list item under the cursor', () => {
+  const table = '| 列 1 | 列 2 |\n| --- | --- |\n| 内容 | 内容 |';
+  const heading = '## Section\n- Child';
+  assert.equal(applyPlan(heading, plan(heading, 5, 5, 'table')), '## Section\n\n' + table + '\n\n- Child');
+  const list = '- Parent\n  1. Target\n     - Child\n- Next';
+  const indent = table.split('\n').map(line => '     ' + line).join('\n');
+  const cursor = list.indexOf('Target') + 2;
+  assert.equal(applyPlan(list, plan(list, cursor, cursor, 'table')), '- Parent\n  1. Target\n\n' + indent + '\n\n     - Child\n- Next');
+});
+
 test('table insertion starts on a new line and keeps a surrounding blank line', () => {
   const text = 'before\n\nafter';
   const result = plan(text, 8, 8, 'table');

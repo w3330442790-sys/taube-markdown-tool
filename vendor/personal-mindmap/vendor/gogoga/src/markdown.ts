@@ -659,7 +659,8 @@ export function parseMarkdown(src: string, opts: ParseOptions = {}): MindDoc {
       const indent = indentWidth(leadingWs(raw));
       if (!prevWasBlank && lastListItem && !interruptsParagraph(raw)) {
         // 紧跟在列表项后面的非空行：懒延续，归该项（能打断段落的块不算，见 interruptsParagraph）
-        push({ node: lastListItem, buf: noteBuf }, raw);
+        // Keep a continued block in its existing buffer, including a parent's trailing block.
+        push(target.node === lastListItem ? target : { node: lastListItem, buf: noteBuf }, raw);
       } else {
         while (listStack.length && listStack[listStack.length - 1].indent >= indent) listStack.pop();
         if (listStack.length) {
