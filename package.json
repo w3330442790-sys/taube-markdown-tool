@@ -1,6 +1,6 @@
 {
   "name": "taube-markdown-tool",
-  "version": "2.5.6",
+  "version": "2.5.7",
   "description": "Markdown annotations, block editing, a text toolbar, a fused mind-map canvas and Android-friendly table tools in one plugin.",
   "main": "main.js",
   "scripts": {

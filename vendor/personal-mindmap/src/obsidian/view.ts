@@ -6,6 +6,7 @@ import { parse, serialize } from '../core/doc';
 import type { MindDoc, Topic } from '../core/types';
 import { parseMarkdownDoc, syncMarkdownDoc, restoreMarkdownMetadata, repairMindmapMarkdown, type SourceSpan } from '../fusion/markdown';
 import { SnapshotWriter } from '../fusion/persistence';
+import { projectTextMarks } from '../fusion/text-marks';
 import { scopeHost } from '../fusion/lifetime';
 import type { Host, HostCommand, InMsg, OutMsg } from '../../webview/src/host';
 import type GogogaPlugin from '../../vendor/gogoga/src/main';
@@ -183,7 +184,15 @@ export class WmindView extends TextFileView {
     super.onPaneMenu(menu,source);
     if(this.file)menu.addItem(item=>item.setTitle('保存本地冲突副本').setIcon('save').onClick(()=>void this.saveConflictCopy()));
   }
-  protected emit(m:InMsg):void{for(const handler of this.listeners)handler(m);}
+  protected emit(m:InMsg):void {
+    for(const handler of this.listeners)handler(m);
+    if(m.type==='init'||m.type==='update')this.refreshTextMarks();
+  }
+  refreshTextMarks():void {
+    if(!this.markdownMode||!this.file||!this.currentDoc||!this.listeners.size)return;
+    const marks=this.plugin.getMarkdownTextMarks?.(this.file.path)??[];
+    this.emit({type:'textMarks',topics:projectTextMarks(this.lastText,this.currentDoc,marks)});
+  }
   command(command:HostCommand):boolean{this.emit({type:'command',command});return false;}
   protected async onMessage(m:OutMsg):Promise<void>{
     if(m.type==='edit'){

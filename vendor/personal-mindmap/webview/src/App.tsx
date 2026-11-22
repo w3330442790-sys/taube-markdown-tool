@@ -16,6 +16,7 @@ import type { Issue, MindDoc, Point, Topic } from "../../src/core/types";
 import type { Host, HostCommand, HostKind, InMsg } from "./host";
 import { History } from "./history";
 import { buildScene } from "./scene";
+import type { TopicTextMarks } from '../../src/fusion/text-marks';
 import { Canvas, zoomAt, type CanvasApi, type DropTarget, type Viewport } from "./Canvas";
 import { Toolbar } from "./Toolbar";
 import { TopicFormatBar } from "./TopicFormatBar";
@@ -91,6 +92,7 @@ export function App({ host }: { host: Host }) {
   /** 整个界面的根元素:Obsidian 里多个导图共用一个页面,全局事件只处理落在本界面内的 */
   const rootRef = useRef<HTMLDivElement>(null);
   const [doc, setDocState] = useState<MindDoc | null>(null);
+  const [textMarks, setTextMarks] = useState<ReadonlyMap<string,TopicTextMarks>>(new Map());
   const docRef = useRef<MindDoc | null>(null);
   const [error, setError] = useState<ParseError | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -213,8 +215,8 @@ export function App({ host }: { host: Host }) {
   const scene = useMemo(() => {
     if(!viewDoc)return null;
     const restore=registerRichRenderer({renderMath:host.renderMath,resolveImage:host.resolveResource,renderPdfCrop:host.renderPdfCrop,renderMarkdown:host.renderMarkdown});
-    try{return buildScene(viewDoc,dark,host.editorSettings);}finally{restore();}
-  }, [viewDoc, dark, fontTick]);
+    try{return buildScene(viewDoc,dark,host.editorSettings,textMarks);}finally{restore();}
+  }, [viewDoc, dark, fontTick, textMarks]);
   const sceneRef = useRef(scene);
   sceneRef.current = scene;
 
@@ -741,7 +743,10 @@ export function App({ host }: { host: Host }) {
         setLang(m.lang);
         setHostKind(m.host);
         fileName.current = m.fileName;
+        setTextMarks(new Map());
         loadRef.current(m.text, true);
+      } else if (m.type === "textMarks") {
+        setTextMarks(new Map(m.topics.map(topic => [topic.id,topic])));
       } else if(m.type === "setShowHidden"){setShowHidden(m.showHidden);}
       else if(m.type === "setLocked"){setLocked(m.locked);setEditing(null);setLinkingFrom(null);}
       else if(m.type === "foldLevel"){foldRef.current(m.level,!!m.fromSelection);}
@@ -1096,7 +1101,7 @@ export function App({ host }: { host: Host }) {
       <div className="wm-main">
         {outlineDock&&!studyMode&&view==="map"&&<aside aria-label="大纲面板" style={{width:280,minWidth:180,maxWidth:"40%",resize:"horizontal",overflow:"auto",borderRight:"1px solid #8884",display:"flex",flexDirection:"column"}}>
           <div style={{padding:8,display:"flex",justifyContent:"space-between"}}><span>大纲</span><button onClick={()=>setOutlineDock(false)}>×</button></div>
-          <Outline host={host} docked wrap={host.editorSettings?.outlineWrap} actions={{...actions,doc:viewDoc!,select:ids=>{setSelection(ids);if(ids[0])requestAnimationFrame(()=>reveal(ids[0]));}}} />
+          <Outline host={host} textMarks={textMarks} docked wrap={host.editorSettings?.outlineWrap} actions={{...actions,doc:viewDoc!,select:ids=>{setSelection(ids);if(ids[0])requestAnimationFrame(()=>reveal(ids[0]));}}} />
         </aside>}
         <div className="wm-stage">
           {issues.length > 0 && (
@@ -1140,7 +1145,7 @@ export function App({ host }: { host: Host }) {
             />
             </RichEnvironment.Provider>
           ) : (
-            <Outline host={host} actions={actions} />
+            <Outline host={host} textMarks={textMarks} actions={actions} />
           )}
           {laser && view === "map" && <Laser onExit={exitLaser} />}
           {search && view === "map" && (

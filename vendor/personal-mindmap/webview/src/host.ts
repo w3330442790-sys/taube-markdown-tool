@@ -1,3 +1,5 @@
+import type { TopicTextMarks } from '../../src/fusion/text-marks';
+
 // 画布 ↔ 宿主 的消息桥。VS Code 走 acquireVsCodeApi;Obsidian 由视图直接实现 Host;
 // 浏览器预览(npm run dev:web / 无头测试)见 previewHost.ts
 
@@ -26,6 +28,7 @@ export type HostCommand = "undo" | "redo" | "zoomIn" | "zoomOut" | "fit" | "expo
 export type InMsg =
   | { type: "init"; text: string; lang: string; fileName: string; host: HostKind }
   | { type: "update"; text: string }
+  | { type: "textMarks"; topics: TopicTextMarks[] }
   | { type: "select"; ids: string[]; center?: boolean }
   | { type:"setShowHidden";showHidden:boolean }
   | { type: "setLocked"; locked: boolean }

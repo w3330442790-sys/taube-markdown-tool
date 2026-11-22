@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, TFile, TFolder, App, MarkdownView, Notice, Vie
 import { Comment, CommentManager, sourceFingerprint, mapCommentChange } from "./commentManager";
 import { mapSyncRange, mapSyncRangeAfterWhitespaceDeletion, repairMindmapMarkdown, type SourceSpan } from '../vendor/personal-mindmap/src/fusion/markdown';
 import MindmapPluginBase from "../vendor/personal-mindmap/src/obsidian/main";
+import type { SourceTextMark } from '../vendor/personal-mindmap/src/fusion/text-marks';
 import { registerMindmapBridges } from './mindmap-bridge';
 import { loadExcelTool, standaloneExcelToolEnabled } from './excel-tool';
 import type { Plugin } from 'obsidian';
@@ -1644,6 +1645,17 @@ class SideNoteSettingTab extends PluginSettingTab {
 
 export default class SideNote extends MindmapPluginBase {
     private pendingAnchorSaves=new Set<string>();
+    getMarkdownTextMarks(path: string): SourceTextMark[] {
+        if (!this.commentManager || !this.toolSettings.showHighlights) return [];
+        const marks: SourceTextMark[] = [];
+        for (const comment of this.commentManager.getCommentsForFile(path)) {
+            const { absoluteFrom: from, absoluteTo: to, selectedText: text, isOrphaned } = comment;
+            const format = comment.markType ?? 'highlight';
+            if (isOrphaned || format === 'none' || from === undefined || to === undefined) continue;
+            marks.push({ from, to, text, format, color: comment.color || this.toolSettings.highlightColor });
+        }
+        return marks;
+    }
     /** Serialize source writes with anchor persistence so file-change handlers cannot race them. */
     async commitMarkdownSync(path:string,before:string,after:string,spans:SourceSpan[],commit:(guard?:()=>void)=>Promise<void>):Promise<void>{
         await this.enqueueMutation(async()=>{
@@ -4215,6 +4227,7 @@ export default class SideNote extends MindmapPluginBase {
     }
 
     refreshEditorDecorations() {
+        this.refreshMarkdownTextMarks?.();
         this.editorViews.forEach((view) => {
             try {
                 view.dispatch({ effects: [forceUpdateEffect.of(null)] });

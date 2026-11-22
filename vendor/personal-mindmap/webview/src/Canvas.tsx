@@ -591,6 +591,7 @@ export function Canvas({ doc, scene, selection, linkingFrom, readOnly, viewport,
         style={st}
         m={m}
         content={content}
+        displayText={scene.markedText.get(box.id)}
         selected={!ghost && sel.has(box.id)}
         dropTarget={!ghost && dropTarget}
         fold={canFold && !ghost ? { collapsed: !!topic!.collapsed, count: topic!.collapsed ? countDescendants(topic!) : 0 } : undefined}

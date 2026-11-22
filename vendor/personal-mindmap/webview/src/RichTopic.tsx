@@ -43,7 +43,11 @@ function appendTokens(el:HTMLElement, tokens:RichToken[], env:RichEnvironmentVal
       if(token.internal)child.addEventListener('mouseover',event=>env.hoverLink?.(event as MouseEvent,token.target!,child));
     }
     if(token.kind==='tag'){child.setAttribute('href','#');child.style.cssText='color:inherit;background:#6484ff22;border-radius:4px;padding:1px 3px;cursor:pointer';child.addEventListener('pointerdown',event=>event.stopPropagation());child.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();env.openTag?.(token.target!);});}
-    if (token.kind === "highlight") child.style.cssText = `background:#ffe690;color:${colored?"inherit":"#242424"};border-radius:2px`;
+    if (token.kind === "highlight") {
+      child.style.backgroundColor = safeInlineColor(token.background) ?? "#ffe690";
+      child.style.color = colored || token.background ? "inherit" : "#242424";
+      child.style.borderRadius = "2px";
+    }
     if (token.kind === "color") child.style.color = safeInlineColor(token.color) ?? "#dc2626";
     if (token.kind === "code" || token.kind === "math") child.style.cssText = "font-family:monospace;background:rgba(128,128,128,.12);border-radius:3px";
     if (token.kind === "image" || token.kind === "embed") {
@@ -102,7 +106,7 @@ function appendTokens(el:HTMLElement, tokens:RichToken[], env:RichEnvironmentVal
       }
     } else if (token.children) appendTokens(child,token.children,env,colored||token.kind==="color");
     else child.textContent = token.kind === "math" ? `$${token.text}$` : token.text??"";
-    if (token.kind === "highlight" && (env.studyMode || env.clozeMode) && !env.revealed?.has(env.topicId??"")) {
+    if (token.kind === "highlight" && !token.background && (env.studyMode || env.clozeMode) && !env.revealed?.has(env.topicId??"")) {
       const hidden = document.createElement("span");
       while(child.firstChild) hidden.append(child.firstChild);
       hidden.style.visibility="hidden";child.append(hidden);

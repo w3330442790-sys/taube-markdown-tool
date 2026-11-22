@@ -32,6 +32,18 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
  },fixture);
  await page.goto(`http://127.0.0.1:${server.address().port}/`);
  await page.locator('[data-id="root"]').first().waitFor();
+ await check('Markdown marks update the canvas without editing its document',async()=>{
+   const source=await page.evaluate(()=>JSON.stringify(window.__testDoc));
+   const labels=page.locator('[data-id="edit"] .wm-rich-topic');
+   await page.evaluate(()=>window.postMessage({type:'textMarks',topics:[{
+     id:'edit',text:'苹果、香蕉，梨',marks:[{from:0,to:2,text:'苹果',format:'text-color',color:'#dc2626'},{from:3,to:5,text:'香蕉',format:'bold'}],
+   }]},'*'));
+   await labels.locator('span[style*="220, 38, 38"]').filter({hasText:'苹果'}).waitFor({state:'attached'});
+   assert.equal(await labels.locator('strong').textContent(),'香蕉');
+   await page.evaluate(()=>window.postMessage({type:'textMarks',topics:[]},'*'));
+   await labels.waitFor({state:'detached'});
+   assert.equal(await page.evaluate(()=>JSON.stringify(window.__testDoc)),source);
+ });
  await check('tablet primary search and cloze stay visible without dragging the long toolbar',async()=>{
    await page.setViewportSize({width:768,height:1024});
    for(let n=0;n<7;n++)await command(page,'zoomOut');

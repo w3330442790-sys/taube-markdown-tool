@@ -7,7 +7,8 @@ import { indexDoc } from "../../src/core/query";
 import type { MindDoc, Topic } from "../../src/core/types";
 import type { Actions } from "./App";
 import { t } from "./i18n";
-import {isRichText} from './rich';
+import {isRichText, markedTopicText} from './rich';
+import type { TopicTextMarks } from '../../src/fusion/text-marks';
 import {fillRichElement} from './RichTopic';
 import type {Host} from './host';
 
@@ -28,7 +29,9 @@ function flatten(doc: MindDoc): Row[] {
 }
 
 
-export function Outline({ actions: a,docked,wrap,host }: { actions: Actions;docked?:boolean;wrap?:boolean;host?:Host }) {
+export function Outline({ actions: a,docked,wrap,host,textMarks }: {
+  actions: Actions;docked?:boolean;wrap?:boolean;host?:Host;textMarks?:ReadonlyMap<string,TopicTextMarks>;
+}) {
   const rows = flatten(a.doc);
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
   const [focusId, setFocusId] = useState<string | null>(a.selection[0] ?? a.doc.root.id);
@@ -61,6 +64,7 @@ export function Outline({ actions: a,docked,wrap,host }: { actions: Actions;dock
             wrap={wrap}
             key={topic.id}
             topic={topic}
+            displayText={markedTopicText(topic.text,textMarks?.get(topic.id))}
             depth={depth}
             isRoot={topic.id === a.doc.root.id}
             active={focusId === topic.id}
@@ -120,6 +124,7 @@ export function Outline({ actions: a,docked,wrap,host }: { actions: Actions;dock
 function OutlineRow({
   host,
   topic,
+  displayText,
   wrap,
   depth,
   isRoot,
@@ -133,6 +138,7 @@ function OutlineRow({
 }: {
   host?:Host;
   topic: Topic;
+  displayText: string;
   wrap?:boolean;
   depth: number;
   isRoot: boolean;
@@ -148,8 +154,8 @@ function OutlineRow({
   const [formatBar, setFormatBar] = useState(false);
   const selectionRevision=useRef(0);
   const preview=useRef<HTMLDivElement>(null),input=useRef<HTMLTextAreaElement|null>(null);
-  const rich=isRichText(topic.text)&&!active;
-  useEffect(()=>{if(preview.current)fillRichElement(preview.current,topic.text,{renderMath:host?.renderMath,resolveImage:host?.resolveResource});},[topic.text,rich,host]);
+  const rich=isRichText(displayText)&&!active;
+  useEffect(()=>{if(preview.current)fillRichElement(preview.current,displayText,{renderMath:host?.renderMath,resolveImage:host?.resolveResource});},[displayText,rich,host]);
   useEffect(() => setDraft(topic.text), [topic.text]);
   useEffect(() => {
     if (!active || readOnly) setFormatBar(false);

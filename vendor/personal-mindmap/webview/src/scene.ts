@@ -4,6 +4,8 @@ import { layout, SPACING, alignTierSizes, type LayoutResult, type NodeSize } fro
 import type { Look, MindDoc, Range, Topic } from "../../src/core/types";
 import { measure, type Metrics } from "./measure";
 import { t } from "./i18n";
+import type { TopicTextMarks } from '../../src/fusion/text-marks';
+import { markedTopicText } from './rich';
 
 export interface Scene {
   palette: Palette;
@@ -13,22 +15,27 @@ export interface Scene {
   layout: LayoutResult;
   /** id → 节点或概括数据 */
   topics: Map<string, Topic>;
+  markedText: Map<string, string>;
   ranges: Map<string, { owner: Topic; kind: "summaries" | "boundaries"; range: Range }>;
 }
 
-export function buildScene(doc: MindDoc, dark: boolean, settings:{fontScale?:number;spacingScale?:number} = {}): Scene {
+export function buildScene(doc: MindDoc, dark: boolean, settings:{fontScale?:number;spacingScale?:number} = {},
+  textMarks?: ReadonlyMap<string,TopicTextMarks>): Scene {
   const { palette, styles, look } = resolveAll(doc, dark);
   const fontScale=Number.isFinite(settings.fontScale)?Math.max(.5,Math.min(3,settings.fontScale!/100)):1;
   if(fontScale!==1)for(const [id,st] of styles)styles.set(id,{...st,fontSize:st.fontSize*fontScale});
   const metrics = new Map<string, Metrics>();
   const sizes = new Map<string, NodeSize>();
   const topics = new Map<string, Topic>();
+  const markedText = new Map<string, string>();
   const ranges: Scene["ranges"] = new Map();
   const visit = (tp: Topic) => {
     topics.set(tp.id, tp);
     const st = styles.get(tp.id)!;
     const placeholder = t("emptyText");
-    const m = measure(tp, tp, st, placeholder);
+    const text = markedTopicText(tp.text, textMarks?.get(tp.id));
+    if(text!==tp.text)markedText.set(tp.id,text);
+    const m = measure(tp, text===tp.text ? tp : {...tp,text}, st, placeholder);
     metrics.set(tp.id, m);
     sizes.set(tp.id, m);
     for (const s of tp.summaries ?? []) {
@@ -57,5 +64,5 @@ export function buildScene(doc: MindDoc, dark: boolean, settings:{fontScale?:num
   const themeSpacing=palette.spacing==="compact"?{rootGapX:72,gapX:26,gapY:8,rootGapY:26}:palette.spacing==="loose"?{rootGapX:120,gapX:50,gapY:18,rootGapY:56}:palette.spacing==="normal"?{rootGapX:96,gapX:36,gapY:12,rootGapY:40}:{};
   const spacing={...SPACING,...themeSpacing};const spacingScale=Number.isFinite(settings.spacingScale)?Math.max(.25,Math.min(3,settings.spacingScale!/100)):1;
   for(const key of Object.keys(spacing) as (keyof typeof SPACING)[])spacing[key]*=spacingScale;
-  return { palette, look, styles, metrics, layout: layout(doc, resized,spacing), topics, ranges };
+  return { palette, look, styles, metrics, layout: layout(doc, resized,spacing), topics, markedText, ranges };
 }

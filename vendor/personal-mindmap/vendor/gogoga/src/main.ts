@@ -48,6 +48,7 @@ import { registerMindMapEmbeds } from "./embed";
 import { FileStateStore, LEGACY_KEYS, LegacyFileState, NoteCards, ViewportStore } from "./state";
 import { MarkdownMapStore } from '../../../src/fusion/persistence';
 import type { SourceSpan } from '../../../src/fusion/markdown';
+import type { SourceTextMark } from '../../../src/fusion/text-marks';
 
 const FRONTMATTER_KEY = "mindmap";
 /** 页面预览的来源 id；注册后「页面预览」设置里会出现本插件的开关，默认和 Obsidian 一样按住 ⌘ 才弹 */
@@ -57,6 +58,12 @@ const ICON_KEY = "icon";
 
 export default class MindMapPlugin extends Plugin {
   markdownMaps!: MarkdownMapStore;
+  getMarkdownTextMarks(_path: string): SourceTextMark[] { return []; }
+  refreshMarkdownTextMarks(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_MINDMAP)) {
+      if (leaf.view instanceof MindMapView) leaf.view.refreshTextMarks();
+    }
+  }
   async commitMarkdownSync(_path:string,_before:string,_after:string,_spans:SourceSpan[],commit:(guard?:()=>void)=>Promise<void>):Promise<void>{await commit();}
   settings: MindMapSettings = { ...DEFAULT_SETTINGS };
   /** 锁定、备注展开、隐藏标注：插件目录下的 state.json，和设置分开 */

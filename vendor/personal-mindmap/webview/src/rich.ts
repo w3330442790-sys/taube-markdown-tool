@@ -1,5 +1,7 @@
+import type { TopicTextMarks } from '../../src/fusion/text-marks';
+
 /** Small safe inline AST: HTML is always literal; host capabilities are explicit. */
-export type RichToken = {kind: "text"|"bold"|"italic"|"underline"|"strike"|"highlight"|"color"|"code"|"link"|"tag"|"image"|"math"|"embed"; text?:string; target?:string; internal?:boolean; children?:RichToken[]; display?:boolean; width?:number; height?:number; color?:string};
+export type RichToken = {kind: "text"|"bold"|"italic"|"underline"|"strike"|"highlight"|"color"|"code"|"link"|"tag"|"image"|"math"|"embed"; text?:string; target?:string; internal?:boolean; children?:RichToken[]; display?:boolean; width?:number; height?:number; color?:string; background?:string};
 function plainTokens(text:string):RichToken[]{
   const result:RichToken[]=[];let at=0;
   for(const match of text.matchAll(/https?:\/\/[^\s<>]+|(^|[\s(])#([\p{L}\p{N}_/-]+)/gu)){
@@ -32,7 +34,7 @@ export function safeImageSource(value:string, hostResolved = false):string|null 
   if (hostResolved && /^(app:|https?:|blob:|vscode-webview-resource:|vscode-resource:)/i.test(value) && !/[\u0000-\u001f]/.test(value)) return value;
   return null;
 }
-const tokenPattern = /\\([!-/:-@[-`{-~])|!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|!\[([^\]]*)\]\(([^\s)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^\s)]+)\)|(\$\$?)([^$\n]+?)\10|\*\*((?:[^*]|\*(?!\*))+?)\*\*\*?|__(.+?)__|~~(.+?)~~|==(.+?)==|`([^`]+)`|\*([^*\n]+)\*|_([^_\n]+)_|<span\s+style="color:(#[0-9a-f]{6})"\s*>([\s\S]*?)<\/span>|<iframe\s+([^>]*?)\/?>(?:\s*<\/iframe>)?|<br\s*\/?>|<em>([\s\S]*?)<\/em>|<u>([\s\S]*?)<\/u>/gi;
+const tokenPattern = /\\([!-/:-@[-`{-~])|!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|!\[([^\]]*)\]\(([^\s)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^\s)]+)\)|(\$\$?)([^$\n]+?)\10|\*\*((?:[^*]|\*(?!\*))+?)\*\*\*?|__(.+?)__|~~(.+?)~~|==(.+?)==|`([^`]+)`|\*([^*\n]+)\*|_([^_\n]+)_|<span\s+style=(?:"\s*color\s*:\s*(#[0-9a-f]{6})\s*;?\s*")\s*>([\s\S]*?)<\/span>|<iframe\s+([^>]*?)\/?>(?:\s*<\/iframe>)?|<br\s*\/?>|<em>([\s\S]*?)<\/em>|<u>([\s\S]*?)<\/u>|<mark style="background-color:(#[0-9a-f]{6})">([\s\S]*?)<\/mark>/gi;
 export function parseRich(text:string, depth = 0):RichToken[] {
   if (depth > 8) return [{kind:"text",text}];
   const out:RichToken[] = [];
@@ -51,8 +53,7 @@ export function parseRich(text:string, depth = 0):RichToken[] {
       n = safeLink(target) ? {kind:"link",target,internal:!!m[6],children:parseRich(m[7]??m[8]??target,depth+1).map(token=>token.kind==='link'||token.kind==='tag'?{kind:'text',text:richPlainText([token])}:token)} : {kind:"text",text:m[7]??m[8]??target};
     } else if (m[10]) n = {kind:"math",text:m[11],display:m[10] === "$$"};
     else if (m[19]) {
-      // Only the exact span shape written by the outline toolbar is rich text.
-      // Any other HTML stays literal, exactly as before.
+      // Only an allowlisted color declaration is interpreted.
       n = {kind:"color",color:m[19].toLowerCase(),children:parseRich(m[20]??"",depth+1)};
     }
     else if (m[21]) {
@@ -60,6 +61,7 @@ export function parseRich(text:string, depth = 0):RichToken[] {
       const src=attrs.get("src")??"";
       n=/^https?:\/\//i.test(src)&&safeLink(src)?{kind:"embed",target:src,text:attrs.get("title")??"Video embed",width:dimensions(attrs.get("width")).width??320,height:dimensions(attrs.get("height")).width??180}:{kind:"text",text:m[0]};
     }
+    else if (m[24]) n={kind:"highlight",background:m[24],children:parseRich(m[25],depth+1)};
     else if (m[22]!==undefined || m[23]!==undefined) n={kind:m[22]!==undefined?"italic":"underline",children:parseRich(m[22]??m[23],depth+1)};
     else if (/^<br/i.test(m[0])) n = {kind:"text",text:"\n"};
     else {
@@ -77,3 +79,41 @@ export function parseRich(text:string, depth = 0):RichToken[] {
 export function richPlainText(tokens:RichToken[]):string { return tokens.map(t=>t.children ? richPlainText(t.children) : t.text??t.target??"").join(""); }
 export function isRichText(text:string):boolean { return parseRich(text).some(t=>t.kind!=="text") || /<br\s*\/?>|\\[!-/:-@[-`{-~]/i.test(text); }
 export function safeInlineColor(value:string|undefined):string|null { return typeof value==="string"&&/^#[0-9a-f]{6}$/i.test(value)?value:null; }
+
+/** Build a preview only, leaving the editable topic text and its Markdown untouched. */
+export function markedTopicText(text: string, projection?: TopicTextMarks): string {
+  if (!projection || projection.text !== text) return text;
+  const signature = (tokens: RichToken[]) => {
+    const content: string[] = [];
+    const visit = (token: RichToken) => {
+      if (token.target || token.kind === 'code' || token.kind === 'math') {
+        content.push(JSON.stringify([token.kind, token.target, token.width, token.height, token.display, token.text]));
+      }
+      token.children?.forEach(visit);
+    };
+    tokens.forEach(visit);
+    return JSON.stringify([richPlainText(tokens), content]);
+  };
+  const original = signature(parseRich(text));
+  let result = text;
+  let boundary = text.length;
+  const marks = [...projection.marks].sort((a, b) => b.to - a.to || a.from - b.from);
+  for (const mark of marks) {
+    if (mark.to > boundary) continue;
+    const body = result.slice(mark.from, mark.to);
+    const color = safeInlineColor(mark.color);
+    const wrappers = {
+      bold: ['**', '**'],
+      underline: ['<u>', '</u>'],
+      strikethrough: ['~~', '~~'],
+      highlight: [`<mark style="background-color:${color ?? '#ffe690'}">`, '</mark>'],
+      'text-color': [`<span style="color:${color ?? '#dc2626'}">`, '</span>'],
+    };
+    const [open, close] = wrappers[mark.format];
+    const candidate = result.slice(0, mark.from) + open + body + close + result.slice(mark.to);
+    if (signature(parseRich(candidate)) !== original) continue;
+    result = candidate;
+    boundary = mark.from;
+  }
+  return result;
+}

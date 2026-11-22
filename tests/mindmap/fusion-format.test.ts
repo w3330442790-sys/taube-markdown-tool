@@ -2,6 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses, syncMarkdownDoc } from '../../vendor/personal-mindmap/src/fusion/markdown';
 import { applyInlineFormat } from '../../vendor/personal-mindmap/src/core/inline-format';
+import { projectTextMarks } from '../../vendor/personal-mindmap/src/fusion/text-marks';
+import { markedTopicText, parseRich } from '../../vendor/personal-mindmap/webview/src/rich';
+
+test('Markdown marks project onto exact topic text and stay out of the saved source', () => {
+ const source='---\r\nname: test\r\n---\r\n# Root\r\n- **重点** 和普通文本\r\n- 重点\r\n';
+ const before=parseMarkdownDoc(source,'Root');
+ const node=before.root.children![0];
+ const start=source.indexOf('重点');
+ const end=source.indexOf('普通文本');
+ const marks=projectTextMarks(source,before,[
+  {from:start,to:start+2,text:'重点',format:'text-color',color:'#dc2626'},
+  {from:end,to:end+2,text:'普通',format:'bold'},
+  {from:end,to:end+2,text:'过期',format:'underline'},
+ ]);
+ assert.equal(marks.length,1);
+ const shown=markedTopicText(node.text,marks[0]);
+ const rich=parseRich(shown);
+ assert.equal(rich[0].children?.[0].kind,'color');
+ assert.equal(rich[2].kind,'bold');
+ assert.equal(syncMarkdownDoc(source,before,before,'Root').text,source);
+ assert.equal(markedTopicText('已改写',marks[0]),'已改写');
+});
 
 test('a topic selection can be bold and red and survive Markdown round-trip',()=>{
  const source='# 笔记\n\n- 前文重点后文\n';
@@ -13,6 +35,21 @@ test('a topic selection can be bold and red and survive Markdown round-trip',()=
  const result=syncMarkdownDoc(source,before,edited,'笔记');
  assert.equal(result.text,'# 笔记\n\n- 前文**<span style="color:#dc2626">重点</span>**后文\n');
  assert.equal(parseMarkdownDoc(result.text,'笔记').root.children![0].text,topic.text);
+});
+
+test('canvas italic, underline, strike and highlight remain inline Markdown on reopen',()=>{
+ const source='# 笔记\n\n- 前文重点后文\n';
+ const before=parseMarkdownDoc(source,'笔记');
+ const edited=structuredClone(before);
+ const topic=edited.root.children![0];
+ let selection={text:topic.text,start:2,end:4};
+ for (const format of ['italic','underline','strike','highlight'] as const) {
+  selection=applyInlineFormat(selection.text,selection.start,selection.end,format,true);
+ }
+ topic.text=selection.text;
+ const {text}=syncMarkdownDoc(source,before,edited,'笔记');
+ assert.match(text,/<em><u>~~==重点==~~<\/u><\/em>/);
+ assert.equal(parseMarkdownDoc(text,'笔记').root.children![0].text,topic.text);
 });
 import {addRange, moveMany, summaryToBranch} from '../../vendor/personal-mindmap/src/core/ops';
 import * as sync from '../../vendor/personal-mindmap/src/fusion/markdown';

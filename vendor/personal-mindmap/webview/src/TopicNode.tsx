@@ -115,6 +115,7 @@ interface Props {
   style: ResolvedStyle;
   m: Metrics;
   content: Content;
+  displayText?: string;
   selected: boolean;
   dropTarget?: boolean;
   fold?: FoldInfo;
@@ -129,7 +130,7 @@ function foldPos(box: NodeBox): { x: number; y: number } {
   return { x: lx, y: box.h + 9 };
 }
 
-export const TopicNode = memo(function TopicNode({ box, style: s, m, content, selected, dropTarget, fold, ghost, background }: Props) {
+export const TopicNode = memo(function TopicNode({ box, style: s, m, content, displayText, selected, dropTarget, fold, ghost, background }: Props) {
   const { w, h } = box;
   const richEnv = useContext(RichEnvironment);
   const covered = !!richEnv.studyMode && !richEnv.revealed?.has(box.id) && (content.text.includes("🙈") || content.markers?.includes("🙈") || content.markers?.includes("answer"));
@@ -180,7 +181,7 @@ export const TopicNode = memo(function TopicNode({ box, style: s, m, content, se
       {(content.markers ?? []).map((id, i) => (
         <Marker key={id + i} id={id} x={m.markersX + i * (m.markerSize + 3)} y={m.markersY} size={m.markerSize} />
       ))}
-      {m.rich ? <RichTopic topicId={box.id} text={content.text} x={m.textX} y={m.textY} w={m.textW} h={m.textH} font={m.font} lineHeight={m.lineHeight} align={s.textAlign} color={s.textColor} strike={s.strike} /> : <text
+      {m.rich ? <RichTopic topicId={box.id} text={displayText ?? content.text} x={m.textX} y={m.textY} w={m.textW} h={m.textH} font={m.font} lineHeight={m.lineHeight} align={s.textAlign} color={s.textColor} strike={s.strike} /> : <text
         fontFamily={s.fontFamily}
         fontSize={s.fontSize}
         fontWeight={s.bold ? 600 : 400}
