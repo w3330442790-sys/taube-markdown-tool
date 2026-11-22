@@ -234,7 +234,7 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await page.getByRole('listbox',{name:'链接到笔记'}).waitFor();await editor.press('Enter');await editor.press('Enter');
    await page.waitForFunction(()=>window.__testDoc.root.children.find(n=>n.id==='edit').text==='链接到 [[测试笔记]]');
  });
- await check('canvas selection retains combined bold and red after commit',async()=>{
+ await check('floating canvas toolbar layers styles on selected text only and keeps graph links',async()=>{
    await page.evaluate(()=>window.postMessage({type:'select',ids:['edit']},'*'));await command(page,'editNode');
    const editor=page.getByLabel('topic text');
    await editor.fill('前文重点后文');
@@ -243,13 +243,25 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await editor.press('Shift+ArrowRight');await editor.press('Shift+ArrowRight');
    assert.deepEqual(await editor.evaluate(el=>[el.selectionStart,el.selectionEnd]),[2,4]);
    const bar=page.getByRole('toolbar',{name:'选中文字格式'});
+   const bounds=await bar.boundingBox(),stage=await page.locator('.wm-stage').boundingBox();
+   assert.ok(bounds.x>=stage.x&&bounds.y>=stage.y&&bounds.x+bounds.width<=stage.x+stage.width);
+   const links=await page.evaluate(()=>window.__testDoc.relationships);
    await bar.getByRole('button',{name:'加粗',exact:true}).click();
    await page.waitForFunction(()=>document.querySelector('[aria-label="topic text"]').selectionStart===4);
-   await bar.getByRole('button',{name:'标红',exact:true}).click();
+   await bar.getByRole('button',{name:'斜体',exact:true}).click();
+   await page.waitForFunction(()=>document.querySelector('[aria-label="topic text"]').selectionStart===8);
+   await bar.getByRole('button',{name:'下划线',exact:true}).click();
+   await page.waitForFunction(()=>document.querySelector('[aria-label="topic text"]').selectionStart===11);
+   await bar.getByRole('button',{name:'文字颜色',exact:true}).click();
+   await bar.getByRole('button',{name:'标蓝',exact:true}).click();
    await editor.press('Enter');
    const topic=page.locator('.wm-topic[data-id="edit"]');
-   await topic.locator('strong span').getByText('重点',{exact:true}).waitFor();
-   assert.match(await topic.locator('strong span').getByText('重点',{exact:true}).getAttribute('style'),/rgb\(220, 38, 38\)/);
+   const styled=topic.locator('strong em u span').getByText('重点',{exact:true});
+   await styled.waitFor();
+   assert.match(await styled.getAttribute('style'),/rgb\(37, 99, 235\)/);
+   assert.equal(await topic.locator('strong').textContent(),'重点');
+   assert.equal(await topic.locator('.wm-rich-topic').textContent(),'前文重点后文');
+   assert.deepEqual(await page.evaluate(()=>window.__testDoc.relationships),links);
  });
  await check('note popover callback writes the selected note and notebook picker creates a link',async()=>{
    await page.locator('[data-id="notes"] [data-kind="note-icon"]').click();

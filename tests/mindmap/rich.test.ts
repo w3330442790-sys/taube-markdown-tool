@@ -13,6 +13,12 @@ test("inline formatting keeps nested text and link targets", () => {
   assert.equal(nodes[0].kind, "bold");
   assert.ok(nodes.some(n => n.kind === "link" && n.target === "Note#part" && n.internal));
 });
+test("canvas underline and italic compose safely inside Markdown emphasis",()=>{
+  const nodes=parseRich("前文**<em><u>~~==重点==~~</u></em>**后文");
+  assert.equal(richPlainText(nodes),"前文重点后文");
+  assert.deepEqual([nodes[1].kind,nodes[1].children?.[0].kind,nodes[1].children?.[0].children?.[0].kind],["bold","italic","underline"]);
+  assert.equal(richPlainText(parseRich('<u onclick="evil()">重点</u>')),'<u onclick="evil()">重点</u>');
+});
 test("images and math are typed tokens without executing html", () => {
   const nodes = parseRich('![[photo.png|120]] $x^2$ <img onerror=evil>');
   assert.equal(nodes[0].kind, "image");

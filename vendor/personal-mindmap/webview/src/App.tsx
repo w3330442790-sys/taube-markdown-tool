@@ -18,6 +18,7 @@ import { History } from "./history";
 import { buildScene } from "./scene";
 import { Canvas, zoomAt, type CanvasApi, type DropTarget, type Viewport } from "./Canvas";
 import { Toolbar } from "./Toolbar";
+import { TopicFormatBar } from "./TopicFormatBar";
 import { Laser } from "./Laser";
 import { SearchBar, type SearchMode } from "./Search";
 import { ContextMenu } from "./ContextMenu";
@@ -611,7 +612,8 @@ export function App({ host }: { host: Host }) {
   const formatTopicSelection=(format:InlineFormat)=>{
     const current=editingRef.current,editor=captureRef.current;
     if(!current||!editor||readOnly||composing.current||editor.selectionStart===editor.selectionEnd)return;
-    const result=applyInlineFormat(current.value,editor.selectionStart,editor.selectionEnd,format);
+    const result=applyInlineFormat(current.value,editor.selectionStart,editor.selectionEnd,format,true);
+    if(result.text===current.value){if(format!=="clear-color")notify(t("inlineFormatBoundary"));return;}
     setEditing({...current,value:result.text});setLinkChoices(null);
     requestAnimationFrame(()=>{
       if(editingRef.current?.id!==current.id||captureRef.current!==editor)return;
@@ -1219,8 +1221,9 @@ export function App({ host }: { host: Host }) {
               if (!editingRef.current) return;
               e.stopPropagation();
               if (e.nativeEvent.isComposing || composing.current) return;
-              if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase()==="b") {
-                e.preventDefault();formatTopicSelection("bold");return;
+              if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey) {
+                const format=({b:"bold",i:"italic",u:"underline"} as const)[e.key.toLowerCase() as "b"|"i"|"u"];
+                if(format){e.preventDefault();formatTopicSelection(format);return;}
               }
               if(linkChoices){
                 if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();setLinkChoices({...linkChoices,index:(linkChoices.index+(e.key==='ArrowDown'?1:-1)+linkChoices.items.length)%linkChoices.items.length});return;}
@@ -1243,12 +1246,8 @@ export function App({ host }: { host: Host }) {
               if (editingRef.current) commitEdit();
             }}
           />
-          {editing&&hasTextSelection&&view==="map"&&!readOnly&&getTopic(doc,editing.id)&&(
-            <div className="wm-topic-format" role="toolbar" aria-label={t("inlineFormat")} onPointerDown={event=>event.preventDefault()}>
-              <button type="button" onClick={()=>formatTopicSelection("bold")}>{t("inlineBold")}</button>
-              <button type="button" className="wm-topic-red" onClick={()=>formatTopicSelection("red")}>{t("inlineRed")}</button>
-              <button type="button" onClick={()=>formatTopicSelection("clear-color")}>{t("inlineClearColor")}</button>
-            </div>
+          {editing&&hasTextSelection&&!linkChoices&&view==="map"&&!readOnly&&getTopic(doc,editing.id)&&(
+            <TopicFormatBar key={editing.id} editor={captureRef} apply={formatTopicSelection} />
           )}
           {linkChoices&&editing&&<div role="listbox" aria-label="链接到笔记" style={{position:'absolute',zIndex:110,left:edStyle.left,top:typeof edStyle.top==='number'?edStyle.top+48:80,maxHeight:240,overflow:'auto',minWidth:220,background:scene.palette.background,border:'1px solid #888',borderRadius:8,padding:6}}>{linkChoices.items.map((choice,index)=><button key={choice} role="option" aria-selected={index===linkChoices.index} style={{display:'block',width:'100%',padding:8,background:index===linkChoices.index?'#6484ff33':'transparent',color:scene.palette.text,border:0,textAlign:'left'}} onPointerDown={event=>{event.preventDefault();insertLinkChoice(choice);}}>{choice}</button>)}</div>}
           {view === "map" && (

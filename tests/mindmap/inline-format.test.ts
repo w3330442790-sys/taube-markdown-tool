@@ -2,6 +2,43 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { applyInlineFormat, INLINE_ORANGE, INLINE_RED } from "../../vendor/personal-mindmap/src/core/inline-format";
 
+test("canvas selection can layer and toggle regular formats without changing surrounding text",()=>{
+  const source="前文重点后文";
+  let result={text:source,start:2,end:4};
+  for(const format of ["bold","italic","underline","strike","highlight"] as const){
+    result=applyInlineFormat(result.text,result.start,result.end,format,true);
+    assert.equal(result.text.slice(result.start,result.end),"重点");
+  }
+  assert.equal(result.text,"前文**<em><u>~~==重点==~~</u></em>**后文");
+  result=applyInlineFormat(result.text,result.start,result.end,"bold",true);
+  assert.equal(result.text,"前文<em><u>~~==重点==~~</u></em>后文");
+});
+
+test("canvas recolor and clear only change the selected part of a colored phrase",()=>{
+  const source=`前<span style="color:${INLINE_RED}">红色文字</span>后`;
+  const start=source.indexOf("色文");
+  const recolored=applyInlineFormat(source,start,start+2,"blue",true);
+  assert.equal(recolored.text,`前<span style="color:${INLINE_RED}">红</span><span style="color:#2563eb">色文</span><span style="color:${INLINE_RED}">字</span>后`);
+  assert.equal(recolored.text.slice(recolored.start,recolored.end),"色文");
+  const cleared=applyInlineFormat(source,start,start+2,"clear-color",true);
+  assert.equal(cleared.text,`前<span style="color:${INLINE_RED}">红</span>色文<span style="color:${INLINE_RED}">字</span>后`);
+});
+
+test("partial recolor preserves enclosing bold, and a cut markup delimiter is never rewritten",()=>{
+  const source=`<span style="color:${INLINE_RED}">**红色文字**</span>`;
+  const start=source.indexOf("色文");
+  const recolored=applyInlineFormat(source,start,start+2,"blue",true);
+  assert.equal(recolored.text,`**<span style="color:${INLINE_RED}">红</span><span style="color:#2563eb">色文</span><span style="color:${INLINE_RED}">字</span>**`);
+  assert.equal(recolored.text.slice(recolored.start,recolored.end),"色文");
+  assert.equal(applyInlineFormat(source,2,start+2,"italic",true).text,source);
+});
+
+test("Markdown formatting does not put spaces inside delimiters",()=>{
+  const result=applyInlineFormat("前 重点 后",1,5,"bold",true);
+  assert.equal(result.text,"前 **重点** 后");
+  assert.equal(result.text.slice(result.start,result.end),"重点");
+});
+
 test("format: selected text is wrapped in the exact safe red span", () => {
   const source = "厥阴之为病，消渴。";
   const start = source.indexOf("消渴");

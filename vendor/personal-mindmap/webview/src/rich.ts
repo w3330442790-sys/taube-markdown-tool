@@ -1,5 +1,5 @@
 /** Small safe inline AST: HTML is always literal; host capabilities are explicit. */
-export type RichToken = {kind: "text"|"bold"|"italic"|"strike"|"highlight"|"color"|"code"|"link"|"tag"|"image"|"math"|"embed"; text?:string; target?:string; internal?:boolean; children?:RichToken[]; display?:boolean; width?:number; height?:number; color?:string};
+export type RichToken = {kind: "text"|"bold"|"italic"|"underline"|"strike"|"highlight"|"color"|"code"|"link"|"tag"|"image"|"math"|"embed"; text?:string; target?:string; internal?:boolean; children?:RichToken[]; display?:boolean; width?:number; height?:number; color?:string};
 function plainTokens(text:string):RichToken[]{
   const result:RichToken[]=[];let at=0;
   for(const match of text.matchAll(/https?:\/\/[^\s<>]+|(^|[\s(])#([\p{L}\p{N}_/-]+)/gu)){
@@ -32,7 +32,7 @@ export function safeImageSource(value:string, hostResolved = false):string|null 
   if (hostResolved && /^(app:|https?:|blob:|vscode-webview-resource:|vscode-resource:)/i.test(value) && !/[\u0000-\u001f]/.test(value)) return value;
   return null;
 }
-const tokenPattern = /\\([!-/:-@[-`{-~])|!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|!\[([^\]]*)\]\(([^\s)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^\s)]+)\)|(\$\$?)([^$\n]+?)\10|\*\*((?:[^*]|\*(?!\*))+?)\*\*\*?|__(.+?)__|~~(.+?)~~|==(.+?)==|`([^`]+)`|\*([^*\n]+)\*|_([^_\n]+)_|<span\s+style="color:(#[0-9a-f]{6})"\s*>([\s\S]*?)<\/span>|<iframe\s+([^>]*?)\/?>(?:\s*<\/iframe>)?|<br\s*\/?>/gi;
+const tokenPattern = /\\([!-/:-@[-`{-~])|!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|!\[([^\]]*)\]\(([^\s)]+)\)|\[\[([^\]|]+)(?:\|([^\]]+))?\]\]|\[([^\]]+)\]\(([^\s)]+)\)|(\$\$?)([^$\n]+?)\10|\*\*((?:[^*]|\*(?!\*))+?)\*\*\*?|__(.+?)__|~~(.+?)~~|==(.+?)==|`([^`]+)`|\*([^*\n]+)\*|_([^_\n]+)_|<span\s+style="color:(#[0-9a-f]{6})"\s*>([\s\S]*?)<\/span>|<iframe\s+([^>]*?)\/?>(?:\s*<\/iframe>)?|<br\s*\/?>|<em>([\s\S]*?)<\/em>|<u>([\s\S]*?)<\/u>/gi;
 export function parseRich(text:string, depth = 0):RichToken[] {
   if (depth > 8) return [{kind:"text",text}];
   const out:RichToken[] = [];
@@ -60,6 +60,7 @@ export function parseRich(text:string, depth = 0):RichToken[] {
       const src=attrs.get("src")??"";
       n=/^https?:\/\//i.test(src)&&safeLink(src)?{kind:"embed",target:src,text:attrs.get("title")??"Video embed",width:dimensions(attrs.get("width")).width??320,height:dimensions(attrs.get("height")).width??180}:{kind:"text",text:m[0]};
     }
+    else if (m[22]!==undefined || m[23]!==undefined) n={kind:m[22]!==undefined?"italic":"underline",children:parseRich(m[22]??m[23],depth+1)};
     else if (/^<br/i.test(m[0])) n = {kind:"text",text:"\n"};
     else {
       const ix = [12,13,14,15,16,17,18].find(i=>m[i]!==undefined)!;

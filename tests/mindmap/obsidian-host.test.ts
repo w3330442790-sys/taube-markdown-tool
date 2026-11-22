@@ -79,6 +79,25 @@ test('Markdown mindmap text edits synchronize without new markers, whitespace or
  }
 });
 
+test('inline red and bold plus a graph-only link survive save, view switch and reopen',async()=>{
+ const source='# Root\n- 前文重点后文\n- 另一节点\n';
+ const {view,disk,maps}=await fixture(source,{markdown:true,wrapper:true,echo:true});
+ const edited=structuredClone(view.doc);
+ const [first,second]=edited.root.children;
+ first.text='前文**<span style="color:#dc2626">重点</span>**后文';
+ edited.relationships=[{id:'relation01',from:first.id,to:second.id,text:'联系'}];
+ const edit=view.receive({type:'edit',text:JSON.stringify(edited)});
+ await view.onUnloadFile(view.file);
+ await edit;
+ assert.equal(disk(),source.replace('前文重点后文',first.text));
+ assert.deepEqual(maps.get('note.md').doc.relationships,edited.relationships);
+ view.clear();
+ view.setViewData(disk(),true);
+ await view.receive({type:'ready'});
+ assert.equal(view.doc.root.children[0].text,first.text);
+ assert.deepEqual(view.doc.relationships,edited.relationships);
+});
+
 test('ready repairs old managed quote gaps once and later edits preserve the repaired source',async()=>{
  const source='# Root\n正文\n\n> 引用\n';
  const {view,disk,maps}=await fixture(source,{markdown:true});
