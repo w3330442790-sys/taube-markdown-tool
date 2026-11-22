@@ -40,7 +40,7 @@ const server = http.createServer((req, res) => {
       assert.ok(layout.every(b => b.y === layout[0].y && b.h >= 40), JSON.stringify(layout));
       const scroll = page.locator('.mt-md-toolbar-scroll');
       await scroll.evaluate(el => { el.scrollLeft = el.scrollWidth; });
-      for (const command of ['find-replace', 'cloze-toggle']) {
+      for (const command of ['find-replace', 'cloze-toggle', 'go-to-start']) {
         const button = page.locator(`[data-command="${command}"]`);
         const b = await button.boundingBox(); assert.ok(b.x >= 0 && b.x + b.width <= 768);
         assert.ok((await button.innerText()).length > 0);
@@ -69,12 +69,28 @@ const server = http.createServer((req, res) => {
       await page.evaluate(() => window.setup());
       const toolbar = page.locator('.mt-md-toolbar');
       assert.equal(await toolbar.count(), 1);
-      assert.equal(await page.locator('.mt-md-toolbar-btn').count(), 21);
+      assert.equal(await page.locator('.mt-md-toolbar-btn').count(), 22);
       assert.equal(await page.locator('.mt-md-toolbar-sep').count(), 3);
       const first = await page.evaluate(() => document.querySelector('.view-content')?.firstElementChild?.className);
       assert.equal(first, 'mt-md-toolbar');
       const commands = await page.evaluate(() => [...document.querySelectorAll('.mt-md-toolbar-btn')].map(button => button.getAttribute('data-command')));
-      assert.deepEqual(commands.slice(0, 4), ['find-replace', 'cloze-toggle', 'undo', 'redo']);
+      assert.deepEqual(commands.slice(0, 5), ['find-replace', 'cloze-toggle', 'go-to-start', 'undo', 'redo']);
+    });
+
+    await check('return to start scrolls long notes and works in reading mode', async () => {
+      const text=Array.from({length:400},(_,i)=>'Line '+i).join('\n');
+      await page.evaluate(text=>{window.setup();window.setText(text);window.select(text.length,text.length);},text);
+      const scroller=page.locator('.cm-scroller');
+      await scroller.evaluate(el=>{el.scrollTop=el.scrollHeight;});
+      assert.ok(await scroller.evaluate(el=>el.scrollTop>0));
+      const button=page.getByRole('button',{name:'返回开头',exact:true});
+      await button.click();
+      await page.waitForFunction(()=>document.querySelector('.cm-scroller').scrollTop===0);
+      assert.deepEqual(await page.evaluate(()=>window.selection()),{from:0,to:0});
+      assert.equal(await page.evaluate(()=>window.doc()),text);
+      await page.evaluate(text=>{window.virtualPreview(text);window.previewLine=399;},text);
+      await button.click();
+      assert.equal(await page.evaluate(()=>window.previewLine),0);
     });
 
     await check('undo and redo buttons use the native editor history', async () => {

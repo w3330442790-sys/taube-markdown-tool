@@ -19,7 +19,7 @@ import { markPresentation } from './selection-tools';
 import { migrateLegacyData } from './legacy-data';
 import { BlockIndex, mapPlanRange, planBlockMove, type MovePlan } from './block-drag';
 import { blockDragExtension, blockMoveEffect, dispatchBlockMove } from './drag-handles';
-import { MARKDOWN_TOOLBAR_COMMANDS, applyMarkdownCommand, mountMarkdownToolbar, refreshClozeToolbar, openMarkdownSearch } from './markdown-toolbar';
+import { MARKDOWN_TOOLBAR_COMMANDS, applyMarkdownCommand, mountMarkdownToolbar, refreshClozeToolbar, openMarkdownSearch, runMarkdownToolbarCommand } from './markdown-toolbar';
 import { createClozeExtension, toggleCloze } from './cloze';
 import { commentStorageBasename } from './comment-storage';
 import { commitCommentFiles, recoverCommentFiles, CommentStorageCommitError } from './comment-storage-io';
@@ -3754,6 +3754,17 @@ export default class SideNote extends MindmapPluginBase {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || (!view.containerEl.querySelector('.mt-md-toolbar') && view.getMode() !== 'source')) return false;
                 if (!checking && !openMarkdownSearch(view)) view.showSearch(true);
+                return true;
+            },
+        });
+        this.addCommand({
+            id: 'markdown-go-to-start',
+            name: 'Markdown 工具栏：返回开头',
+            icon: 'arrow-up-to-line',
+            checkCallback: checking => {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (!view) return false;
+                if (!checking) runMarkdownToolbarCommand(view, 'go-to-start');
                 return true;
             },
         });

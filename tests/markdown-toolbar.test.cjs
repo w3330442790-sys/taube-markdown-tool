@@ -314,7 +314,7 @@ test('cloze toggle stores its state on the Markdown view container', () => {
 
 test('edit commands delegate undo, redo and find-replace to Obsidian', () => {
   const editCommands = toolbar.MARKDOWN_EDIT_COMMANDS.map(entry => entry.command);
-  assert.deepEqual(editCommands, ['undo', 'redo', 'find-replace', 'cloze-toggle']);
+  assert.deepEqual(editCommands, ['undo', 'redo', 'find-replace', 'cloze-toggle', 'go-to-start']);
   assert.ok(toolbar.MARKDOWN_EDIT_COMMANDS.every(entry => entry.group === 'edit'));
   assert.equal(toolbar.MARKDOWN_TOOLBAR_COMMANDS.length, 17);
 
@@ -352,6 +352,24 @@ test('edit commands delegate undo, redo and find-replace to Obsidian', () => {
   toolbar.runMarkdownToolbarCommand(view, 'cloze-toggle', message => notices.push(message));
   assert.equal(classes.has('mt-cloze-hidden'), false);
   assert.deepEqual(notices, []);
+});
+
+test('return to start navigates the current Markdown mode without editing', () => {
+  const calls = [];
+  let mode = 'source';
+  const view = {
+    getMode: () => mode,
+    editor: {
+      setCursor: pos => calls.push(['cursor', pos]),
+      scrollTo: (x,y) => calls.push(['scroll', x, y]),
+    },
+    previewMode: { applyScroll: line => calls.push(['preview', line]) },
+  };
+  const start = { line: 0, ch: 0 };
+  toolbar.runMarkdownToolbarCommand(view, 'go-to-start');
+  mode = 'preview';
+  toolbar.runMarkdownToolbarCommand(view, 'go-to-start');
+  assert.deepEqual(calls, [['cursor', start], ['scroll', 0, 0], ['preview', 0]]);
 });
 
 test('reading mode blocks edit actions but keeps cloze available', () => {

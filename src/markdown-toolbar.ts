@@ -11,7 +11,7 @@ export type MarkdownFormatCommand =
     | 'link' | 'table' | 'divider' | 'clear-marks';
 
 /** Edit actions delegate to Obsidian instead of rewriting Markdown themselves. */
-export type MarkdownEditCommand = 'undo' | 'redo' | 'find-replace' | 'cloze-toggle';
+export type MarkdownEditCommand = 'undo' | 'redo' | 'find-replace' | 'cloze-toggle' | 'go-to-start';
 
 export type MarkdownCommand = MarkdownFormatCommand | MarkdownEditCommand;
 
@@ -32,6 +32,7 @@ export const MARKDOWN_EDIT_COMMANDS: ToolbarEntry<MarkdownEditCommand>[] = [
     { command: 'redo', label: '重做', group: 'edit' },
     { command: 'find-replace', label: '查找替换', group: 'edit' },
     { command: 'cloze-toggle', label: '挖孔', group: 'edit' },
+    { command: 'go-to-start', label: '返回开头', group: 'edit' },
 ];
 
 /** Toolbar metadata; the fixed toolbar renders these entries in order. */
@@ -60,6 +61,7 @@ const TOOLBAR_ICONS: Partial<Record<MarkdownCommand, string>> = {
     redo: 'redo-2',
     'find-replace': 'search',
     'cloze-toggle': 'eye-off',
+    'go-to-start': 'arrow-up-to-line',
     bold: 'bold',
     italic: 'italic',
     strikethrough: 'strikethrough',
@@ -550,6 +552,15 @@ export function runMarkdownToolbarCommand(
     command: MarkdownCommand,
     notify: (message: string) => void = message => new Notice(message),
 ): void {
+    if (command === 'go-to-start') {
+        if (view.getMode() === 'preview') {
+            view.previewMode.applyScroll(0);
+        } else {
+            view.editor.setCursor({ line: 0, ch: 0 });
+            view.editor.scrollTo(0, 0);
+        }
+        return;
+    }
     if (command === 'cloze-toggle') {
         toggleCloze(view);
         return;
@@ -647,11 +658,13 @@ export function mountMarkdownToolbar(
             const icon = TOOLBAR_ICONS[entry.command];
             if (icon) setIcon(button, icon);
         }
-        if (entry.command === 'cloze-toggle' || entry.command === 'find-replace') {
+        if (entry.command === 'cloze-toggle' || entry.command === 'find-replace' || entry.command === 'go-to-start') {
             primary.appendChild(button);
             if (entry.command === 'find-replace') {
                 const text = createSpan(); text.textContent = '查找'; button.append(text);
                 button.setAttribute('aria-expanded', 'false');
+            } else if (entry.command === 'go-to-start') {
+                const text = createSpan(); text.textContent = '开头'; button.append(text);
             }
         } else scroll.appendChild(button);
         if (entry.command === 'cloze-toggle') syncClozeButton(button, view);

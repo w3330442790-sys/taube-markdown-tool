@@ -46,6 +46,10 @@ window.setup = () => {
         editor: {
             cm: view,
             focus: () => view?.focus(),
+            setCursor: ({line,ch}: {line:number; ch:number}) => {
+                if (view) view.dispatch({ selection: { anchor: view.state.doc.line(line + 1).from + ch } });
+            },
+            scrollTo: (x:number,y:number) => view?.scrollDOM.scrollTo(x,y),
             undo: () => { window.calls.push('undo'); if (view) undo(view); },
             redo: () => { window.calls.push('redo'); if (view) redo(view); },
         },
