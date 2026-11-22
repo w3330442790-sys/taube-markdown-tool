@@ -9,7 +9,8 @@ import { SnapshotWriter } from '../fusion/persistence';
 import { scopeHost } from '../fusion/lifetime';
 import type { Host, HostCommand, InMsg, OutMsg } from '../../webview/src/host';
 import type GogogaPlugin from '../../vendor/gogoga/src/main';
-import type {HoverPopover} from 'obsidian';
+import type {HoverPopover, Menu} from 'obsidian';
+import { saveMindmapPdf } from './pdf-save';
 import { parseMarkdown, pathAtLine } from '../../vendor/gogoga/src/markdown';
 import { pathOf, findByPath, type MindNode } from '../../vendor/gogoga/src/model';
 
@@ -22,6 +23,7 @@ export class WmindView extends TextFileView {
   protected currentDoc:MindDoc|null=null;
   protected selected:string[]=[];
   private root:Root|null=null;
+  private headerActions:HTMLElement[]=[];
   private listeners=new Set<(m:InMsg)=>void>();
   private writer:SnapshotWriter|null=null;
   private writerFile:TFile|null=null;
@@ -155,7 +157,16 @@ export class WmindView extends TextFileView {
     }catch(error){new Notice(`无法保存冲突副本：${(error as Error).message}；本地内容仍保留在当前视图。`);}})();
     await this.recoveryTask;this.recoveryTask=null;
   }
-  private unmount():void{this.mountGeneration++;this.root?.unmount();this.root=null;this.listeners.clear();}
+  private unmount():void{
+    this.mountGeneration++;this.root?.unmount();this.root=null;this.listeners.clear();
+    for(const action of this.headerActions)action.remove();
+    this.headerActions=[];
+  }
+  protected addMindmapAction(icon:string,title:string,callback:()=>void):HTMLElement{
+    const action=this.addAction(icon,title,callback);
+    this.headerActions.push(action);
+    return action;
+  }
   private mount():void{
     this.unmount();this.contentEl.empty();this.mountedPath=this.file?.path??'';
     const saved=this.file?this.plugin.getViewport(this.file.path):undefined;
@@ -166,9 +177,12 @@ export class WmindView extends TextFileView {
     const generation=this.mountGeneration;
     this.root.render(createElement(App,{host:scopeHost(this.host,()=>generation===this.mountGeneration),key:this.mountedPath}));
     if(this.markdownMode)this.addMarkdownActions();
-    this.addAction('save','保存本地冲突副本',()=>void this.saveConflictCopy());
   }
   protected addMarkdownActions():void{}
+  onPaneMenu(menu:Menu,source:string):void{
+    super.onPaneMenu(menu,source);
+    if(this.file)menu.addItem(item=>item.setTitle('保存本地冲突副本').setIcon('save').onClick(()=>void this.saveConflictCopy()));
+  }
   protected emit(m:InMsg):void{for(const handler of this.listeners)handler(m);}
   command(command:HostCommand):boolean{this.emit({type:'command',command});return false;}
   protected async onMessage(m:OutMsg):Promise<void>{
@@ -186,7 +200,12 @@ export class WmindView extends TextFileView {
         return;
       }
       case 'openLink':this.openLink(m.target);return;
-      case 'export':await this.exportFile(m.defaultName,m.data,m.encoding,m.note,m.copy);return;
+      case 'export':
+        if(m.format==='pdf'){
+          try{await saveMindmapPdf(this.app,m.defaultName,Uint8Array.from(atob(m.data),character=>character.charCodeAt(0)));}
+          catch(error){new Notice(`导出 PDF 失败：${String(error)}`);}
+        }else await this.exportFile(m.defaultName,m.data,m.encoding,m.note,m.copy);
+        return;
       case 'notify':new Notice(m.message);return;
       case 'openText':if(this.file&&this.markdownMode)await this.plugin.openAsMarkdown(this.file,this.leaf);return;
     }

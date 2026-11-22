@@ -108,6 +108,7 @@ Markdown 是正文来源；完整画布的高级图形信息保存在文件末�
 
 - **完整主画布**：原“融合 Mindmap”的 Weilanx／gogoga 画布、样式面板、主题、外框、概括、联系线、背诵模式、备注卡片、富内容、PNG/SVG 导出等全部内置，不再需要另装插件。
 - **任意 Markdown 一键切换**：每个 Markdown 标签右上角都有“思维导图”按钮；切换前先保存，脑图里改完可从右上角切回 Markdown 或分屏。不会写 frontmatter、不会生成第二份笔记或镜像文件。
+- **PDF 与局部格式**：Markdown 编辑器右键菜单和导图工具栏分别提供 PDF 导出，每次选择保存位置。双击导图节点并选中文字，可局部加粗、标红并同步到 Markdown 正文。详情见 [2.5.3 发布说明](RELEASE_NOTES-2.5.3.md)。
 - **完整格式与 XMind**：新建 / 打开 `.wmind`，以及只读查看 `.xmind` 并转换为 Markdown 或 `.wmind`。旧 `.xmind` 标签也会转到内置视图。
 - **设置分开保存**：设置页分为“Taube Markdown Tool”（批注）与“Taube Markdown Tool · 思维导图”（脑图）。批注设置仍在 `data.json`，脑图设置写到同目录的 `mindmap-settings.json`，两边不会互相覆盖。首次加载自动迁移 `personal-mindmap` 的 `data.json` / `state.json`。
 - **旧标签自动衔接**：1.2.0–1.6.2 的 `markdown-tool-mindmap` 标签直接由新画布接管；`personal-mindmap-markdown`、`personal-mindmap-wmind`、`personal-mindmap-xmind` 标签会转发到对应新视图。若检测到 `personal-mindmap` 仍启用，会提示停用，避免两个入口同时出现。

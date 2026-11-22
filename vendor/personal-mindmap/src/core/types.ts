@@ -102,7 +102,7 @@ export interface MindDoc {
 }
 
 export const FORMAT_VERSION = 1;
-export const DEFAULT_THEME = "classic";
+export const DEFAULT_THEME = "paper";
 export const DEFAULT_STRUCTURE: Structure = "map";
 export const DEFAULT_LOOK: Look = "standard";
 export const DEFAULT_FILL_STYLE: FillStyle = "hachure";

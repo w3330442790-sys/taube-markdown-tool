@@ -594,16 +594,23 @@ export default class MindMapPlugin extends Plugin {
       const view = leaf.view;
       if (!(view instanceof MarkdownView) || !view.file) continue;
       live.add(view);
-      if (this.mapButtons.has(view)) continue;
+      const previous=this.mapButtons.get(view);
+      if (previous && view.containerEl.contains(previous)) continue;
+      previous?.remove();
+      let switching=false;
       const el = view.addAction(MINDMAP_ICON, "切换为思维导图（不修改文件）", () => {
         const file = view.file;
-        if (!file) return;
+        if (!file || switching) return;
+        switching=true;
         void (async () => {
           try {
             await view.save();
+            if(view.file!==file||view.leaf.view!==view)return;
             await this.openAsMindMap(file, view.leaf, false);
           } catch (error) {
             new Notice(`切换失败：${(error as Error).message}`);
+          } finally {
+            switching=false;
           }
         })();
       });

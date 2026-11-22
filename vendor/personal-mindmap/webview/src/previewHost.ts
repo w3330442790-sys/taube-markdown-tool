@@ -25,7 +25,7 @@ export function previewHost(): Host {
         localStorage.setItem(STORE_KEY, text);
       } else if (msg.type === "export") {
         const a = document.createElement("a");
-        const mime = msg.format === "png" ? "image/png" : msg.format === "svg" ? "image/svg+xml" : "text/markdown";
+        const mime = msg.format === "pdf" ? "application/pdf" : msg.format === "png" ? "image/png" : msg.format === "svg" ? "image/svg+xml" : "text/markdown";
         a.href = msg.encoding === "base64" ? `data:${mime};base64,${msg.data}` : URL.createObjectURL(new Blob([msg.data], { type: mime }));
         a.download = msg.defaultName;
         a.click();

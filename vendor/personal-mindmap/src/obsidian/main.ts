@@ -1,4 +1,4 @@
-import { TFile, TFolder, Notice, normalizePath, loadMathJax, type Editor } from 'obsidian';
+import { MarkdownView, TFile, TFolder, Notice, normalizePath, loadMathJax, type App, type Editor } from 'obsidian';
 import GogogaPlugin from '../../vendor/gogoga/src/main';
 import { WmindView, VIEW_TYPE } from './view';
 import { newDoc, serialize } from '../core/doc';
@@ -10,6 +10,12 @@ import { registerWmindEmbeds } from './wmind-embed';
 import { VIEW_TYPE_MINDMAP } from '../../vendor/gogoga/src/view';
 
 export default class PersonalMindmapPlugin extends GogogaPlugin {
+  private exportMarkdownPdf(view:MarkdownView):void{
+    const app=this.app as App & {commands?:{executeCommandById(id:string):boolean}};
+    this.app.workspace.setActiveLeaf(view.leaf);
+    if(!app.commands?.executeCommandById('workspace:export-pdf'))new Notice('当前 Obsidian 平台不支持原生 Markdown PDF 导出。');
+  }
+
   async onload(): Promise<void> {
     await super.onload();
     void loadMathJax().then(()=>this.refreshPrimaryViews()).catch(()=>undefined);
@@ -28,10 +34,19 @@ export default class PersonalMindmapPlugin extends GogogaPlugin {
     // These write a real HTML colour span into the Markdown source, unlike the
     // annotation plugin's text-colour marks, so label the distinction clearly.
     this.addCommand({ id: 'mark-red', name: '标红选中文字（写入正文）', editorCallback: editor => this.formatMarkdownSelection(editor, 'red') });
+    this.addCommand({ id: 'mark-bold', name: '加粗选中文字（写入正文）', editorCallback: editor => this.formatMarkdownSelection(editor, 'bold') });
     this.addCommand({ id: 'clear-marked-color', name: '清除正文文字颜色', editorCallback: editor => this.formatMarkdownSelection(editor, 'clear-color') });
-    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor) => {
+    this.addCommand({id:'export-markdown-pdf',name:'导出 Markdown 为 PDF',checkCallback:checking=>{
+      const view=this.app.workspace.getActiveViewOfType(MarkdownView);
+      if(!view?.file)return false;
+      if(!checking)this.exportMarkdownPdf(view);
+      return true;
+    }});
+    this.registerEvent(this.app.workspace.on('editor-menu', (menu, editor, view) => {
+      if(view instanceof MarkdownView)menu.addItem(item=>item.setTitle('导出 Markdown 为 PDF').setIcon('file-down').onClick(()=>this.exportMarkdownPdf(view)));
       if (!editor.somethingSelected()) return;
       menu.addItem(item => item.setTitle('标红选中文字（写入正文）').setIcon('baseline').onClick(() => this.formatMarkdownSelection(editor, 'red')));
+      menu.addItem(item => item.setTitle('加粗选中文字（写入正文）').setIcon('bold').onClick(() => this.formatMarkdownSelection(editor, 'bold')));
       menu.addItem(item => item.setTitle('清除正文文字颜色').setIcon('eraser').onClick(() => this.formatMarkdownSelection(editor, 'clear-color')));
     }));
     const commands: [string, string, HostCommand][] = [
@@ -41,6 +56,7 @@ export default class PersonalMindmapPlugin extends GogogaPlugin {
       ['wmind-lock','锁定 / 解锁编辑','toggleLock'],['wmind-notes','展开 / 收起备注','toggleNotes'],
       ['wmind-focus','聚焦选中分支','focusBranch'],['wmind-exit-focus','退出分支聚焦','exitFocus'],
       ['wmind-export-png','导出 PNG','export'],['wmind-export-svg','导出 SVG','exportSvg'],['wmind-copy-image','复制图片','copyImage'],
+      ['wmind-export-pdf','导出思维导图为 PDF','exportPdf'],
       ['wmind-export-markdown','导出 Markdown 大纲','exportMarkdown'],
       ['wmind-add-child','完整格式 · 添加子节点','addChild'],['wmind-add-sibling','完整格式 · 添加同级节点','addSibling'],
       ['wmind-insert-before','完整格式 · 在前面插入节点','insertBefore'],['wmind-insert-parent','完整格式 · 插入父节点','insertParent'],

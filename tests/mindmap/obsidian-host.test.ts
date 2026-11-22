@@ -11,6 +11,7 @@ async function loadView(wrapper=false) {
  export class Scope { register(){} }
  export class TextFileView { constructor(leaf){this.leaf=leaf;this.app=leaf.app;this.file=leaf.file;this.scope={};this.data='';this.contentEl={};} async onClose(){} async onUnloadFile(){} setEphemeralState(){} }
  export class WorkspaceLeaf {} export class Modal {} export class Component { load(){} unload(){} }
+ export class FuzzySuggestModal {} export const Platform={isDesktopApp:false};
  export class TFile {} export const MarkdownRenderer={render(){}};export function finishRenderMath(){} export function renderMath(){} export const moment={locale(){return 'en';}};
  `}));
  build.onResolve({filter:/^(react|react-dom\/client)$/},args=>({path:args.path,namespace:'react-shim'}));
@@ -33,6 +34,22 @@ async function loadView(wrapper=false) {
  };
 }
 const valid=(text:string,version=1)=>JSON.stringify({version,root:{id:'root',text}});
+test('remounting the Markdown mindmap discards old header actions',async()=>{
+ const View=await loadView(true);
+ const view:any=new View({app:{scope:{}}},{});
+ const buttons=new Set<object>();
+ view.addAction=()=>{
+  const action={classList:{add(){}},ownerDocument:{createElement:()=>({})},appendChild(){},remove(){buttons.delete(action);}};
+  buttons.add(action);
+  return action;
+ };
+ for(let repeat=0;repeat<5;repeat++){
+  view.addMarkdownActions();
+  assert.equal(buttons.size,2);
+  view.clear();
+  assert.equal(buttons.size,0);
+ }
+});
 async function fixture(source=valid('A'),options:{echo?:boolean; external?:string; markdown?:boolean; wrapper?:boolean}={}) {
  const View=await loadView(options.wrapper);let disk=source;
  const copies:{path:string;text:string}[]=[];

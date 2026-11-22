@@ -132,7 +132,25 @@ const EXCALI_TINTS: Record<string, string> = {
 /** 手绘画法的字体:Excalifont(西文)+ 小赖(中文),都由画布按需加载 */
 export const HAND_FONT = `"WM Excalifont", "WM Xiaolai", ${SANS}`;
 
+function calmPalette(background:string,text:string,branchFill:string,line:string,rootFill:string):Palette{
+  return palette({
+    background,text,rainbow:[line],relationship:line,lineStyle:"elbow",
+    root:lv(ROOT,{fill:rootFill,fontSize:22,padX:18,padY:10,lineWidth:1.25,radius:10}),
+    main:lv(MAIN,{fill:branchFill,fontSize:16,bold:true,lineWidth:1.2,radius:8,padX:12,padY:7}),
+    sub:lv(SUB,{shape:"rounded",border:"none",borderWidth:0,lineWidth:1.1,padX:8,padY:5}),
+    floating:lv(FLOAT,{fill:branchFill,textColor:"text",radius:8}),
+  });
+}
+
+const paper=calmPalette("#FFFFFF","#272B30","#F1F2F4","#BCC2C9","#282B30");
+const slate=calmPalette("#171A20","#E5E9F0","#2B3341","#737F92","#DCE4F2");
+
 export const THEMES: ThemeDef[] = [
+  {id:"paper",zh:"素页",en:"Paper",light:paper,dark:slate},
+  {id:"mist",zh:"薄雾",en:"Mist",light:calmPalette("#F7F9FC","#253345","#E8EFF7","#AAB9CA","#536985"),dark:slate},
+  {id:"sand",zh:"暖纸",en:"Sand",light:calmPalette("#FCFAF7","#39312A","#F1EBE2","#C7B9A8","#6E5746"),dark:calmPalette("#201C19","#EEE3D8","#342B25","#88776B","#E6D0BC")},
+  {id:"slate",zh:"深潜",en:"Slate",light:slate,dark:slate},
+  {id:"quiet-forest",zh:"秘林",en:"Quiet forest",light:calmPalette("#161E1B","#E1EBE5","#263A31","#728D7E","#D3E7D9"),dark:slate},
   {
     id: "classic",
     zh: "经典",
@@ -363,7 +381,7 @@ export function registerFusionThemes(settings:{customThemes?:readonly FusionCust
 }
 
 export function getTheme(id: string): ThemeDef {
-  return THEMES.find((t) => t.id === id) ?? THEMES[0];
+  return THEMES.find((t) => t.id === id) ?? THEMES.find(t=>t.id==="classic")!;
 }
 
 /** 分支色的浅色版:Excalidraw 调色板查表,其他颜色与底色混合 */

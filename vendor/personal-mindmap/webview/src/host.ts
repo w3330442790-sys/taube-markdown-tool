@@ -4,7 +4,7 @@
 export type OutMsg =
   | { type: "ready" }
   | { type: "edit"; text: string }
-  | { type: "export"; format: "png" | "svg" | "md"; data: string; encoding: "base64" | "utf8"; defaultName: string; note?: string; copy?: boolean }
+  | { type: "export"; format: "png" | "svg" | "md" | "pdf"; data: string; encoding: "base64" | "utf8"; defaultName: string; note?: string; copy?: boolean }
   | { type: "openLink"; target: string }
   | { type: "openText" }
   | { type: "notify"; level: "info" | "warn" | "error"; message: string };
@@ -19,7 +19,7 @@ export type HostCommand = "undo" | "redo" | "zoomIn" | "zoomOut" | "fit" | "expo
   | `showLevel:${number}` | 'exportMarkdown'
   | 'syncPending' | 'flush'
   | "toggleOutline" | "toggleLock" | "toggleStudy" | "toggleNotes" | "toggleCallouts" | "focusBranch" | "exitFocus"
-  | "copyImage" | "exportSvg" | "fold" | "expandAll" | "collapseAll" | "deleteOnly" | "splitTopic"
+  | "copyImage" | "exportSvg" | "exportPdf" | "fold" | "expandAll" | "collapseAll" | "deleteOnly" | "splitTopic"
   | "addChild" | "addSibling" | "insertBefore" | "insertParent" | "editNode" | "callout" | "addRelationship"
   | "deleteNode" | "moveUp" | "moveDown" | "outdent" | "indent" | "boundary" | "summary" | "summaryBranch" | "linkNote";
 

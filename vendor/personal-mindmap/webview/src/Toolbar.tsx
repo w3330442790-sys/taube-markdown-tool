@@ -10,6 +10,9 @@ import { Icon } from "./icons";
 import { langIsZh, t } from "./i18n";
 import { LookSwitch, StructureIcon, ThemeSwatch } from "./FormatPanel";
 
+const simpleThemes=new Set(["paper","mono","gogoga-mono","gogoga-line","sketch"]);
+const darkThemes=new Set(["slate","quiet-forest","night"]);
+
 function Btn({ icon, label, onClick, disabled, active, title }: { icon: ReactNode; label?: string; onClick: () => void; disabled?: boolean; active?: boolean; title?: string }) {
   return (
     <button className={"wm-tb-btn" + (active ? " wm-active" : "")} onClick={onClick} disabled={disabled} title={title ?? label} aria-label={label ?? title} aria-pressed={active}>
@@ -135,29 +138,39 @@ export function Toolbar({ position, actions: a, view, setView, panel, togglePane
               <div className="wm-settings-look">
                 <LookSwitch a={a} />
               </div>
-              <div className="wm-settings-title">{t("theme")}</div>
+              {([
+                ["themesSimple",THEMES.filter(th=>simpleThemes.has(th.id))],
+                ["themesLight",THEMES.filter(th=>!simpleThemes.has(th.id)&&!darkThemes.has(th.id)&&!th.id.startsWith("custom-"))],
+                ["themesDark",THEMES.filter(th=>darkThemes.has(th.id))],
+                ["themesCustom",THEMES.filter(th=>th.id.startsWith("custom-"))],
+              ] as const).map(([label,themes])=>themes.length>0&&(
+              <section key={label} className="wm-theme-group">
+              <div className="wm-settings-title">{t(label)}</div>
               <div className="wm-theme-grid">
-                {THEMES.map((th) => (
+                {themes.map((th) => (
                   <button
                     key={th.id}
                     className={"wm-card" + (th.id === theme ? " wm-active" : "")}
+                    aria-pressed={th.id === theme}
                     disabled={ro}
                     onClick={() => {
                       a.apply((d) => setDocProp(d, "theme", th.id));
                       close();
                     }}
                   >
-                    <ThemeSwatch id={th.id} dark={a.dark} look={docLook(a.doc)} />
+                    <ThemeSwatch id={th.id} dark={label==="themesDark"||(label==="themesCustom"&&a.dark)} look={docLook(a.doc)} />
                     <span>{langIsZh() ? th.zh : th.en}</span>
                   </button>
                 ))}
               </div>
+              </section>
+              ))}
           </div>}
         </Menu>
         <Menu icon={<Icon.export />} label={t("export")}>
           {(close) => (
             <div className="wm-menu-list">
-              {(["png", "svg", "md"] as const).map((f) => (
+              {(["pdf", "png", "svg", "md"] as const).map((f) => (
                 <button
                   key={f}
                   onClick={() => {

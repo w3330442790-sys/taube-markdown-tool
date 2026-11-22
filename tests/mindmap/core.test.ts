@@ -30,7 +30,7 @@ function doc(): MindDoc {
 test("序列化:键序固定、省略默认值、往返一致", () => {
   const d: MindDoc = {
     root: { children: [{ text: "b", id: "x00002", collapsed: false, markers: [] }], text: "a", id: "x00001", style: {} },
-    theme: "classic",
+    theme: "paper",
     version: 1,
     structure: "map",
   } as unknown as MindDoc;
@@ -306,7 +306,7 @@ test("Markdown:提示会丢失的内容", () => {
 // ---------- 主题 ----------
 
 test("主题:一级分支彩虹色,子节点继承,节点覆盖优先", () => {
-  let d = doc();
+  let d:MindDoc = {...doc(),theme:"classic"};
   d = ops.setStyle(d, "b00001", { fill: "#123456" });
   const { styles } = resolveAll(d, false);
   const a = styles.get("a00001")!;

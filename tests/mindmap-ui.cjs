@@ -175,6 +175,20 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    await command(page,'export');await page.waitForFunction(()=>window.__testMessages.some(m=>m.type==='export'&&m.format==='png'));
    const png=await page.evaluate(()=>window.__testMessages.filter(m=>m.type==='export'&&m.format==='png').at(-1).data);assert.ok(png.startsWith('iVBORw0KGgo'));
  });
+ await check('mindmap PDF covers the same bounds regardless of viewport zoom',async()=>{
+   const getPdf=async count=>{
+     await command(page,'exportPdf');
+     await page.waitForFunction(count=>window.__testMessages.filter(m=>m.type==='export'&&m.format==='pdf').length===count,count);
+     const data=await page.evaluate(()=>window.__testMessages.filter(m=>m.type==='export'&&m.format==='pdf').at(-1).data);
+     return Buffer.from(data,'base64').toString('latin1');
+   };
+   const first=await getPdf(1);
+   await command(page,'zoomIn');await command(page,'zoomIn');
+   const zoomed=await getPdf(2);
+   assert.match(zoomed,/^%PDF-1\.4/);
+   assert.equal(zoomed.match(/\/MediaBox \[[^\]]+\]/)?.[0],first.match(/\/MediaBox \[[^\]]+\]/)?.[0]);
+   await command(page,'fit');
+ });
  await check('node images open a full-size preview',async()=>{
    await page.locator('.wm-topic[data-id="image"] img').dblclick();await page.locator('dialog.wm-image-lightbox').waitFor();await page.keyboard.press('Escape');await page.waitForFunction(()=>!document.querySelector('dialog.wm-image-lightbox'));
  });
@@ -219,6 +233,23 @@ async function check(name,fn){await fn();results.push(name);console.log('PASS '+
    const editor=page.getByLabel('topic text');await editor.fill('链接到 [[测');
    await page.getByRole('listbox',{name:'链接到笔记'}).waitFor();await editor.press('Enter');await editor.press('Enter');
    await page.waitForFunction(()=>window.__testDoc.root.children.find(n=>n.id==='edit').text==='链接到 [[测试笔记]]');
+ });
+ await check('canvas selection retains combined bold and red after commit',async()=>{
+   await page.evaluate(()=>window.postMessage({type:'select',ids:['edit']},'*'));await command(page,'editNode');
+   const editor=page.getByLabel('topic text');
+   await editor.fill('前文重点后文');
+   await editor.press('Home');
+   await editor.press('ArrowRight');await editor.press('ArrowRight');
+   await editor.press('Shift+ArrowRight');await editor.press('Shift+ArrowRight');
+   assert.deepEqual(await editor.evaluate(el=>[el.selectionStart,el.selectionEnd]),[2,4]);
+   const bar=page.getByRole('toolbar',{name:'选中文字格式'});
+   await bar.getByRole('button',{name:'加粗',exact:true}).click();
+   await page.waitForFunction(()=>document.querySelector('[aria-label="topic text"]').selectionStart===4);
+   await bar.getByRole('button',{name:'标红',exact:true}).click();
+   await editor.press('Enter');
+   const topic=page.locator('.wm-topic[data-id="edit"]');
+   await topic.locator('strong span').getByText('重点',{exact:true}).waitFor();
+   assert.match(await topic.locator('strong span').getByText('重点',{exact:true}).getAttribute('style'),/rgb\(220, 38, 38\)/);
  });
  await check('note popover callback writes the selected note and notebook picker creates a link',async()=>{
    await page.locator('[data-id="notes"] [data-kind="note-icon"]').click();

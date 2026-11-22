@@ -17,11 +17,11 @@ export class MindMapView extends WmindView {
   constructor(leaf:WorkspaceLeaf,plugin:MindMapPlugin){super(leaf,plugin);}
   getViewType():string{return VIEW_TYPE_MINDMAP;}
   protected addMarkdownActions():void{
-    const markdown=this.addAction('file-text','以 Markdown 打开',()=>{if(this.file)void this.plugin.openAsMarkdown(this.file,this.leaf);});
+    const markdown=this.addMindmapAction('file-text','切换为 Markdown',()=>{if(this.file)void this.plugin.openAsMarkdown(this.file,this.leaf);});
     markdown.classList.add('wm-md-mindmap-action');
     const label=markdown.ownerDocument.createElement('span');
     label.className='wm-md-mindmap-label';label.textContent='Markdown';markdown.appendChild(label);
-    this.addAction('columns-2','Markdown 和脑图分屏',()=>{if(this.file)void this.plugin.openSideBySide(this.file,this.leaf);});
+    this.addMindmapAction('columns-2','Markdown 和脑图分屏',()=>{if(this.file)void this.plugin.openSideBySide(this.file,this.leaf);});
   }
   protected selectionChanged():void{this.plugin.syncMarkdownToMap(this);}
   getSelectedPath():string|null{return this.selectedPath();}

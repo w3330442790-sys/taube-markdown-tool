@@ -189,6 +189,11 @@
 .wm-theme-grid {
   min-width: 250px;
 }
+.wm-theme-group + .wm-theme-group { margin-top: 14px; }
+.wm-theme-group .wm-card {
+  min-height: 62px;
+  border-radius: 8px;
+}
 .wm-theme-grid-panel,
 .wm-struct-grid-panel {
   min-width: 0;
@@ -293,6 +298,22 @@
   caret-color: auto;
   box-shadow: 0 0 0 2px #2f7bff, 0 6px 18px rgba(0, 0, 0, 0.18);
 }
+.wm-topic-format {
+  position: absolute;
+  z-index: 8;
+  bottom: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--background-modifier-border, #d7dbe0);
+  border-radius: 8px;
+  background: var(--background-primary, #fff);
+  box-shadow: 0 4px 16px #0002;
+  white-space: nowrap;
+}
+.wm-topic-format .wm-topic-red { color: #dc2626; }
 
 .wm-zoom {
   position: absolute;

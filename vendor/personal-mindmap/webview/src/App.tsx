@@ -8,6 +8,7 @@ import { OpError } from "../../src/core/ops";
 import { getTopic, indexDoc, subtreeIds } from "../../src/core/query";
 import { markdownLosses, toMarkdown } from "../../src/core/markdown";
 import { clipboardTopics } from '../../src/fusion/clipboard';
+import { applyInlineFormat, type InlineFormat } from "../../src/core/inline-format";
 import { convertPrimaryLevelKind } from '../../src/fusion/markdown';
 import { setImageWidth } from '../../vendor/gogoga/src/inline';
 import { relationshipGeom } from "../../src/core/layout/geometry";
@@ -22,7 +23,7 @@ import { SearchBar, type SearchMode } from "./Search";
 import { ContextMenu } from "./ContextMenu";
 import { FormatPanel } from "./FormatPanel";
 import { Outline } from "./Outline";
-import { prepareSvg, svgToPngBase64 } from "./export";
+import { prepareSvg, svgToPdfBase64, svgToPngBase64 } from "./export";
 import { handFontCss, loadHandFonts } from "./handFonts";
 import { bumpFontEpoch } from "./measure";
 import { setLang, t } from "./i18n";
@@ -34,7 +35,7 @@ export interface Editing {
   selectAll: boolean;
 }
 
-export type ExportFormat = "png" | "svg" | "md";
+export type ExportFormat = "png" | "svg" | "md" | "pdf";
 
 /** 给工具栏 / 格式面板 / 大纲用的操作集合 */
 export interface Actions {
@@ -120,6 +121,7 @@ export function App({ host }: { host: Host }) {
   const [selection, setSelectionState] = useState<string[]>(host.initialState?.selection ?? []);
   const selRef = useRef<string[]>(host.initialState?.selection ?? []);
   const [editing, setEditingState] = useState<Editing | null>(null);
+  const [hasTextSelection, setHasTextSelection] = useState(false);
   const editingRef = useRef<Editing | null>(null);
   const [view, setView] = useState<"map" | "outline">("map");
   const [laser, setLaser] = useState(false);
@@ -173,6 +175,7 @@ export function App({ host }: { host: Host }) {
     setSelectionState(ids);
   };
   const setEditing = (e: Editing | null) => {
+    if(e?.id!==editingRef.current?.id)setHasTextSelection(false);
     editingRef.current = e;
     setEditingState(e);
   };
@@ -571,12 +574,13 @@ export function App({ host }: { host: Host }) {
       return;
     }
     if (view !== "map") setView("map");
-    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(null))));
     const world = rootRef.current?.querySelector(".wm-world") as SVGGElement | null;
     if (!world) return;
     const fontCss = s.look === "hand" ? await handFontCss(world.textContent ?? "") : "";
     const { svg, w, h } = await prepareSvg(world, s.palette.background, fontCss);
     if (format === "svg") host.post({ type: "export", format, data: svg, encoding: "utf8", defaultName: `${name}.svg` });
+    else if (format === "pdf") host.post({ type: "export", format, data: await svgToPdfBase64(svg,w,h), encoding: "base64", defaultName: `${name}-思维导图.pdf` });
     else host.post({ type: "export", format, data: await svgToPngBase64(svg, w, h, 2), encoding: "base64", defaultName: `${name}.png`, copy });
     } catch(error){notify(error instanceof Error?error.message:String(error));}
   };
@@ -603,6 +607,16 @@ export function App({ host }: { host: Host }) {
     const cursor=linkChoices.start+choice.length+4;
     setEditing({...current,value});setLinkChoices(null);
     requestAnimationFrame(()=>{captureRef.current?.focus();captureRef.current?.setSelectionRange(cursor,cursor);});
+  };
+  const formatTopicSelection=(format:InlineFormat)=>{
+    const current=editingRef.current,editor=captureRef.current;
+    if(!current||!editor||readOnly||composing.current||editor.selectionStart===editor.selectionEnd)return;
+    const result=applyInlineFormat(current.value,editor.selectionStart,editor.selectionEnd,format);
+    setEditing({...current,value:result.text});setLinkChoices(null);
+    requestAnimationFrame(()=>{
+      if(editingRef.current?.id!==current.id||captureRef.current!==editor)return;
+      editor.focus();editor.setSelectionRange(result.start,result.end);
+    });
   };
 
   useEffect(() => {
@@ -698,6 +712,7 @@ export function App({ host }: { host: Host }) {
     if(c==="toggleOutline"){if(!studyMode)setOutlineDock(value=>!value);return;}
     if(c==="exitFocus"){setFocusId(null);requestAnimationFrame(()=>requestAnimationFrame(fit));return;}
     if(c==="exportSvg")return void exportAs("svg");
+    if(c==="exportPdf")return void exportAs("pdf");
     if(c==="copyImage")return void exportAs("png",true);
     if(c==="fold")return toggleFold(selectedTopics());
     if(c==="expandAll"||c==="collapseAll"){const d=docRef.current;if(d){if(readOnly)setSubtreeFold(d.root.id,c==="collapseAll");else{setFolds({});commit(ops.setAllCollapsed(d,c==="collapseAll"));}}return;}
@@ -1186,6 +1201,7 @@ export function App({ host }: { host: Host }) {
             value={editing ? editing.value : ""}
             spellCheck={false}
             aria-label="topic text"
+            onSelect={e=>setHasTextSelection(e.currentTarget.selectionStart!==e.currentTarget.selectionEnd)}
             onCompositionStart={() => {
               composing.current = true;
               if (!editingRef.current && targetId && !readOnly) setEditing({ id: targetId, value: "", selectAll: false });
@@ -1203,6 +1219,9 @@ export function App({ host }: { host: Host }) {
               if (!editingRef.current) return;
               e.stopPropagation();
               if (e.nativeEvent.isComposing || composing.current) return;
+              if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase()==="b") {
+                e.preventDefault();formatTopicSelection("bold");return;
+              }
               if(linkChoices){
                 if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();setLinkChoices({...linkChoices,index:(linkChoices.index+(e.key==='ArrowDown'?1:-1)+linkChoices.items.length)%linkChoices.items.length});return;}
                 if(e.key==='Enter'||e.key==='Tab'){e.preventDefault();insertLinkChoice(linkChoices.items[linkChoices.index]);return;}
@@ -1224,6 +1243,13 @@ export function App({ host }: { host: Host }) {
               if (editingRef.current) commitEdit();
             }}
           />
+          {editing&&hasTextSelection&&view==="map"&&!readOnly&&getTopic(doc,editing.id)&&(
+            <div className="wm-topic-format" role="toolbar" aria-label={t("inlineFormat")} onPointerDown={event=>event.preventDefault()}>
+              <button type="button" onClick={()=>formatTopicSelection("bold")}>{t("inlineBold")}</button>
+              <button type="button" className="wm-topic-red" onClick={()=>formatTopicSelection("red")}>{t("inlineRed")}</button>
+              <button type="button" onClick={()=>formatTopicSelection("clear-color")}>{t("inlineClearColor")}</button>
+            </div>
+          )}
           {linkChoices&&editing&&<div role="listbox" aria-label="链接到笔记" style={{position:'absolute',zIndex:110,left:edStyle.left,top:typeof edStyle.top==='number'?edStyle.top+48:80,maxHeight:240,overflow:'auto',minWidth:220,background:scene.palette.background,border:'1px solid #888',borderRadius:8,padding:6}}>{linkChoices.items.map((choice,index)=><button key={choice} role="option" aria-selected={index===linkChoices.index} style={{display:'block',width:'100%',padding:8,background:index===linkChoices.index?'#6484ff33':'transparent',color:scene.palette.text,border:0,textAlign:'left'}} onPointerDown={event=>{event.preventDefault();insertLinkChoice(choice);}}>{choice}</button>)}</div>}
           {view === "map" && (
             <div className="wm-zoom">

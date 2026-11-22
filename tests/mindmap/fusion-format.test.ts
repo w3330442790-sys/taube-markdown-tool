@@ -1,6 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses } from '../../vendor/personal-mindmap/src/fusion/markdown';
+import { parseMarkdownDoc, writeMarkdownDoc, markdownFusionLosses, syncMarkdownDoc } from '../../vendor/personal-mindmap/src/fusion/markdown';
+import { applyInlineFormat } from '../../vendor/personal-mindmap/src/core/inline-format';
+
+test('a topic selection can be bold and red and survive Markdown round-trip',()=>{
+ const source='# 笔记\n\n- 前文重点后文\n';
+ const before=parseMarkdownDoc(source,'笔记');
+ const edited=structuredClone(before);
+ const topic=edited.root.children![0];
+ const bold=applyInlineFormat(topic.text,2,4,'bold');
+ topic.text=applyInlineFormat(bold.text,bold.start,bold.end,'red').text;
+ const result=syncMarkdownDoc(source,before,edited,'笔记');
+ assert.equal(result.text,'# 笔记\n\n- 前文**<span style="color:#dc2626">重点</span>**后文\n');
+ assert.equal(parseMarkdownDoc(result.text,'笔记').root.children![0].text,topic.text);
+});
 import {addRange, moveMany, summaryToBranch} from '../../vendor/personal-mindmap/src/core/ops';
 import * as sync from '../../vendor/personal-mindmap/src/fusion/markdown';
 

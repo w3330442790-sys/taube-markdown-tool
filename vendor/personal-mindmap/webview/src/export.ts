@@ -83,7 +83,7 @@ export async function prepareSvg(world:SVGGElement,background:string,fontCss="")
   return buildSvg(world,background,fontCss,clone,bounds);
 }
 
-export async function svgToPngBase64(svg: string, w: number, h: number, scale = 2): Promise<string> {
+async function rasterize(svg: string, w: number, h: number, scale: number): Promise<HTMLCanvasElement> {
   const img = new Image();
   img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
   await img.decode();
@@ -94,12 +94,60 @@ export async function svgToPngBase64(svg: string, w: number, h: number, scale = 
     await new Promise((r) => setTimeout(r, 400));
   }
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * scale);
-  canvas.height = Math.round(h * scale);
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
   const ctx = canvas.getContext("2d")!;
   ctx.scale(scale, scale);
   ctx.drawImage(img, 0, 0, w, h);
-  return canvas.toDataURL("image/png").split(",")[1];
+  return canvas;
+}
+
+export async function svgToPngBase64(svg: string, w: number, h: number, scale = 2): Promise<string> {
+  return (await rasterize(svg,w,h,scale)).toDataURL("image/png").split(",")[1];
+}
+
+export function jpegToPdf(jpeg:Uint8Array,width:number,height:number,displayWidth=width,displayHeight=height):Uint8Array {
+  const scale=Math.min(0.75,14400/Math.max(displayWidth,displayHeight));
+  const page=[displayWidth,displayHeight].map(size=>Math.max(1,Math.round(size*scale*100)/100));
+  const encode=new TextEncoder();
+  const chunks:Uint8Array[]=[];
+  const offsets=[0];
+  let length=0;
+  const append=(data:string|Uint8Array)=>{
+    const bytes=typeof data==="string"?encode.encode(data):data;
+    chunks.push(bytes);length+=bytes.length;
+  };
+  const object=(id:number,body:string,stream?:Uint8Array)=>{
+    offsets[id]=length;
+    append(`${id} 0 obj\n${body}\n`);
+    if(stream){append("stream\n");append(stream);append("\nendstream\n");}
+    append("endobj\n");
+  };
+  append("%PDF-1.4\n%");
+  append(new Uint8Array([226,227,207,211,10]));
+  object(1,"<< /Type /Catalog /Pages 2 0 R >>");
+  object(2,"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+  object(3,`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${page.join(" ")}] /Resources << /XObject << /Map 4 0 R >> >> /Contents 5 0 R >>`);
+  object(4,`<< /Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpeg.length} >>`,jpeg);
+  const drawing=encode.encode(`q ${page[0]} 0 0 ${page[1]} 0 0 cm /Map Do Q\n`);
+  object(5,`<< /Length ${drawing.length} >>`,drawing);
+  const xref=length;
+  append(`xref\n0 6\n0000000000 65535 f \n${offsets.slice(1).map(offset=>`${String(offset).padStart(10,"0")} 00000 n \n`).join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  const result=new Uint8Array(length);
+  let cursor=0;
+  for(const chunk of chunks){result.set(chunk,cursor);cursor+=chunk.length;}
+  return result;
+}
+
+export async function svgToPdfBase64(svg:string,w:number,h:number):Promise<string> {
+  const canvas=await rasterize(svg,w,h,Math.min(2,8192/Math.max(w,h),Math.sqrt(16_000_000/(w*h))));
+  const data=canvas.toDataURL("image/jpeg",0.96);
+  if(!data.startsWith("data:image/jpeg;base64,"))throw new Error("无法生成导图 PDF 图像");
+  const jpeg=Uint8Array.from(atob(data.split(",")[1]),character=>character.charCodeAt(0));
+  const pdf=jpegToPdf(jpeg,canvas.width,canvas.height,w,h);
+  const parts:string[]=[];
+  for(let at=0;at<pdf.length;at+=32768)parts.push(String.fromCharCode(...pdf.subarray(at,at+32768)));
+  return btoa(parts.join(""));
 }
 
 export function utf8ToBase64(s: string): string {
