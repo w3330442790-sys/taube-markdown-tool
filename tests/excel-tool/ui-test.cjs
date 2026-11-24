@@ -19,13 +19,16 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   const mousePage=await desktop.newPage();mousePage.setDefaultTimeout(6000);mousePage.on('pageerror',e=>errors.push(e.message));
   await mousePage.goto(fixtureUrl);await mousePage.waitForFunction(()=>window.ready);
   const bar=mousePage.locator('.tt-toolbar');
-  await check('desktop mouse click opens editing tools and keeps the text caret',async()=>{
+  await check('desktop uses the cell edge for tools and leaves a text click unobstructed',async()=>{
    const target=mousePage.locator('#existing tbody tr').first().locator('td').first();
    await target.evaluate(cell=>{cell.contentEditable='true';});
    await target.click();
-   a.equal(await bar.getByRole('button',{name:'居中对齐',exact:true}).isVisible(),true);
+   a.equal(await bar.isVisible(),false);
    a.equal(await target.evaluate(cell=>cell===document.activeElement),true);
    a.equal(await mousePage.evaluate(()=>!!p._sel),false);
+   const box=await target.boundingBox();
+   await target.click({position:{x:box.width/2,y:2}});
+   a.equal(await bar.getByRole('button',{name:'居中对齐',exact:true}).isVisible(),true);
    await bar.getByRole('button',{name:'关闭',exact:true}).click();
   });
   await check('desktop mouse click opens reading tools and clicking outside closes them',async()=>{
@@ -65,6 +68,39 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
     return [before,after];
    });
    a.equal(keys[1],keys[0]);
+  });
+  await check('native cell gutters cannot change plain text wrapping or create scrollbars',async()=>{
+   const layout=await mousePage.evaluate(()=>{
+    const style=document.createElement('style');
+    style.textContent=`
+     .fixture-native-cell { font:14px/20px monospace; white-space:break-spaces; padding:0; }
+     .fixture-native-cell .table-cell-wrapper { padding:4px 8px; }
+     .fixture-native-cell .cm-gutters { width:18px; margin-inline-end:24px; }
+     .fixture-native-cell .cm-content,.fixture-native-cell .cm-line { padding:0; min-height:0; }
+     .fixture-native-cell .cm-content.cm-lineWrapping { white-space:break-spaces; overflow-wrap:normal; word-break:normal; }
+     .fixture-native-cell .cm-scroller { font:inherit; }
+    `;
+    document.head.appendChild(style);
+    const table=document.getElementById('other'),cell=table.rows[1].cells[1];
+    const content='Words wrap in several lines here.',rendered=document.createElement('div');
+    cell.classList.add('fixture-native-cell');rendered.className='table-cell-wrapper';rendered.textContent=content;cell.replaceChildren(rendered);
+    const measure=node=>{
+     const origin=cell.getBoundingClientRect(),range=document.createRange();
+     range.selectNodeContents(node);
+     return [...range.getClientRects()].map(({x,y,width,height})=>[x-origin.x,y-origin.y,width,height].map(value=>Math.round(value*10)/10));
+    };
+    const before=measure(rendered.firstChild),active=document.createElement('div');active.className='table-cell-wrapper';
+    rendered.style.display='none';cell.appendChild(active);
+    const cm=new TestCM.view.EditorView({doc:content,parent:active,extensions:[TestCM.view.lineNumbers(),TestCM.view.EditorView.lineWrapping]});
+    const editing=measure(active.querySelector('.cm-line').firstChild),scroller=cm.scrollDOM,gutters=active.querySelector('.cm-gutters');
+    const result={before,editing,gutterDisplay:getComputedStyle(gutters).display,scrollbarWidth:getComputedStyle(scroller).scrollbarWidth,canScroll:getComputedStyle(scroller).overflowY};
+    cm.destroy();active.remove();rendered.style.display='';cell.classList.remove('fixture-native-cell');style.remove();
+    return result;
+   });
+   a.equal(layout.gutterDisplay,'none');
+   a.equal(layout.scrollbarWidth,'none');
+   a.equal(layout.canScroll,'auto');
+   a.deepEqual(layout.editing,layout.before);
   });
   await check('mouse drag selects on the first adjacent cell hit from text or the cell edge',async()=>{
    const run=async edge=>{
@@ -309,7 +345,21 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   a.equal((await lines())[5],'  |  | 甲 |  | 乙 |');
   await select(1,0);await action('删除行','确认删除行');
   a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');
-  await select(1,0);await action('删除列','确认删除列');
+  await select(1,0);
+  await page.evaluate(()=>{window.testNativeTableMenu=true;document.body.style.setProperty('--layer-menu','65');});
+  await button('删除列').click();
+  const confirm=page.getByRole('button',{name:'确认删除列',exact:true});
+  const menuLayers=await confirm.evaluate(item=>{
+   const rect=item.getBoundingClientRect();
+   return {
+    clickable:item.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)),
+    menu:Number(getComputedStyle(item.closest('.menu')).zIndex),
+    toolbar:Number(getComputedStyle(document.querySelector('.tt-toolbar')).zIndex),
+   };
+  });
+  a.ok(menuLayers.clickable&&menuLayers.menu>menuLayers.toolbar,JSON.stringify(menuLayers));
+  await confirm.click();
+  await page.evaluate(()=>{window.testNativeTableMenu=false;document.body.style.removeProperty('--layer-menu');});
   a.equal((await lines())[4],'  | 甲 |  | 乙 |');
   await select(1,0);await button('撤销').click();
   a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');

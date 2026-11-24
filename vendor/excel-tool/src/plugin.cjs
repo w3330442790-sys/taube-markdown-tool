@@ -59,9 +59,9 @@ module.exports=class TabletTableTools extends Base{
   const rect=cell.getBoundingClientRect();
   this._toolbarAnchor={table,cell,x:Number.isFinite(event?.clientX)?event.clientX-rect.left:rect.width/2,y:Number.isFinite(event?.clientY)?event.clientY-rect.top:0};
  }
- isCellEdge(event,cell){
+ isCellEdge(event,cell,limit=10){
   const r=cell.getBoundingClientRect(),x=event.clientX-r.left,y=event.clientY-r.top;
-  return Math.min(x,r.width-x,y,r.height-y)<=10;
+  return Math.min(x,r.width-x,y,r.height-y)<=limit;
  }
  activateCell(table,cell){
   if(this._sel&&this._sel.table!==table)this.clearMergeSelection();
@@ -75,7 +75,7 @@ module.exports=class TabletTableTools extends Base{
   this.rememberToolbarAnchor(table,cell,e);
   const mode=this._touchRange?.table===table?this._touchRange:null;
   const touch=e.pointerType==='touch'||e.pointerType==='pen';
-  if(mode||(!e.shiftKey&&touch&&this.isCellEdge(e,cell))){
+  if(mode||(!e.shiftKey&&touch&&this.isCellEdge(e,cell,4))){
    // Commit only a completed tap. A swipe or another finger must not change
    // the range or consume its starting point.
    e.preventDefault();e.stopImmediatePropagation();
@@ -167,9 +167,9 @@ module.exports=class TabletTableTools extends Base{
    const cell=e.target.closest?.('td,th');
    if(cell?.closest('table')!==table)return;
    if(table.closest('.cm-content')){
-    // The editor handles edges and drags on pointer events. A mouse click can
-    // open the tools after the native caret has been placed.
-    if(e.pointerType!=='mouse'||this._sel||this._textRange||e.target.closest('.tcr-handle,.tt-row-handle'))return;
+    // A click on text edits without an overlay. The border remains a shortcut
+    // to the tools; touch and range gestures are handled on pointer events.
+    if(e.pointerType!=='mouse'||!this.isCellEdge(e,cell,4)||this._sel||this._textRange||e.target.closest('.tcr-handle,.tt-row-handle'))return;
    }else if(e.pointerType!=='mouse'&&!this.isCellEdge(e,cell)){
     this._ttToolsOpen=false;this.hideMergeToolbar();return;
    }
@@ -357,7 +357,9 @@ module.exports=class TabletTableTools extends Base{
  }
  menu(button,items){
   const menu=new Menu();for(const [title,run,checked]of items)menu.addItem(item=>{item.setTitle(title);if(checked!==undefined)item.setChecked(checked);item.onClick(()=>{run();this.refreshMergeToolbar();});});
-  const rect=button.getBoundingClientRect();menu.showAtPosition({x:rect.left,y:rect.top});
+  const rect=button.getBoundingClientRect();
+  const toolbar=button.closest('.tcr-merge-toolbar')?.getBoundingClientRect();
+  menu.showAtPosition({x:rect.left,y:(toolbar?.bottom??rect.bottom)+4});
  }
  ensureToolbarSelection(){
   const sel=this.targetSelection();if(!sel)return null;

@@ -9,7 +9,12 @@ const api={
   constructor(){this.items=[]}addItem(build){const item={setTitle:t=>{item.title=t;return item},setChecked:v=>{item.checked=v;return item},onClick:f=>{item.run=f;return item}};build(item);this.items.push(item);return this}
   showAtPosition(pos){document.querySelectorAll('.menu').forEach(m=>m.remove());const menu=document.createElement('div');menu.className='menu';
    for(const item of this.items){const b=document.createElement('button');b.textContent=(item.checked?'✓ ':'')+item.title;b.setAttribute('aria-label',item.title);b.addEventListener('click',()=>{menu.remove();item.run()});menu.appendChild(b)}
-   menu.style.left=Math.min(pos.x,innerWidth-190)+'px';menu.style.bottom='85px';document.body.appendChild(menu);
+   menu.style.left=Math.min(pos.x,innerWidth-190)+'px';
+   if(window.testNativeTableMenu){
+    menu.style.top=Math.max(0,Math.min(pos.y,innerHeight-100))+'px';
+    menu.style.zIndex='65';
+   }else menu.style.bottom='85px';
+   document.body.appendChild(menu);
   }
  }
 };

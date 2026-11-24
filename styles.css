@@ -2164,7 +2164,15 @@ table[data-tcr] :is(th, td) > .table-cell-wrapper:has(.cm-editor) {
   overflow: hidden;
 }
 table[data-tcr] .table-cell-wrapper :is(.cm-s-obsidian:has(> .cm-editor), .cm-editor) { height: 100%; }
-table[data-tcr] .table-cell-wrapper .cm-editor > .cm-scroller { overflow: auto !important; }
+table[data-tcr] .table-cell-wrapper .cm-editor > .cm-scroller {
+  overflow: auto !important;
+  scrollbar-width: none;
+}
+/* The nested editor inherits the note's line-number/folding gutter. A cell
+   needs the same full text width as its rendered wrapper. */
+table[data-tcr] .table-cell-wrapper .cm-editor > .cm-scroller > .cm-gutters {
+  display: none !important;
+}
 .tcr-merged-hidden { display: none; }
 
 /* One logical layout across THEAD/TBODY; retain editor-owned DOM and indexes. */
@@ -2198,7 +2206,7 @@ table.tcr-grid-table .tcr-merged-hidden { display: none !important; }
 .tcr-merge-toolbar {
   box-sizing: border-box;
   position: fixed;
-  z-index: 1000;
+  z-index: calc(var(--layer-menu, 65) - 1);
   display: flex;
   align-items: center;
   gap: 2px;
