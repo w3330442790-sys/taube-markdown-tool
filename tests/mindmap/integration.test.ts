@@ -74,7 +74,7 @@ test('a new editor transaction during repair hashing cannot be revalidated again
  * Weilanx/gogoga editor: views, commands, setting tabs and the two separate
  * settings files must all be registered exactly once from one plugin instance.
  */
-async function boot(seed: Record<string, string> = {}, enabledPlugins: string[] = []) {
+async function boot(seed: Record<string, string> = {}, enabledPlugins: string[] = [], installedPlugins: string[] = []) {
   const result = await build({
     entryPoints: ['src/main.ts'], bundle: true, write: false, platform: 'node', format: 'cjs',
     define: { 'process.env.NODE_ENV': '"production"' },
@@ -219,7 +219,11 @@ async function boot(seed: Record<string, string> = {}, enabledPlugins: string[] 
     },
     fileManager: { getAvailablePathForAttachment: async (name: string) => name },
     embedRegistry: { embedByExtension: embeds, registerExtension(ext: string, create: unknown) { embeds[ext] = create; }, unregisterExtension(ext: string) { delete embeds[ext]; } },
-    plugins: { plugins: {}, enabledPlugins: new Set<string>(enabledPlugins) },
+    plugins: {
+      plugins: {},
+      manifests: Object.fromEntries(installedPlugins.map(id => [id, { id }])),
+      enabledPlugins: new Set<string>(enabledPlugins),
+    },
     internalPlugins: { getPluginById: () => undefined },
     setting: { open() {}, openTabById() {} },
     commands: { executeCommand() {}, commands: {} },
@@ -335,9 +339,23 @@ test('standalone excel-tool table settings migrate into excel-settings.json only
 });
 
 test('table tools defer to a still-enabled standalone excel-tool plugin', async () => {
-  const f = await boot({}, ['excel-tool']);
+  const f = await boot({}, ['excel-tool'], ['excel-tool']);
   try {
     assert.equal(f.plugin.excelTool, null);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a leftover enabled ID does not block table tools or migration from table-tune', async () => {
+  const settings = JSON.stringify({ widths: { 'note.md': { table: ['180px'] } } });
+  const legacyFile = '.obsidian/plugins/table-tune/data.json';
+  const f = await boot({ [legacyFile]: settings }, ['table-tune']);
+  try {
+    assert.ok(f.plugin.excelTool?.commands.some((command: { id: string }) => command.id === 'open-table-tools'));
+    const migrated = f.files.get('.obsidian/plugins/taube-markdown-tool/excel-settings.json');
+    assert.deepEqual(JSON.parse(migrated!), JSON.parse(settings));
+    assert.equal(f.files.get(legacyFile), settings);
   } finally {
     f.cleanup();
   }

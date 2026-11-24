@@ -24,8 +24,18 @@ const ExcelToolClass = ExcelToolPlugin as unknown as new (
  * until the user disables it and reloads.
  */
 export function standaloneExcelToolEnabled(app: App): boolean {
-    const enabled = (app as App & { plugins?: { enabledPlugins?: Set<string> } }).plugins?.enabledPlugins;
-    return !!enabled?.has('excel-tool') || !!enabled?.has('table-tune');
+    const manager = (app as App & {
+        plugins?: {
+            enabledPlugins?: Set<string>;
+            manifests?: Record<string, PluginManifest>;
+            plugins?: Record<string, Plugin>;
+        };
+    }).plugins;
+    // A disabled manifest can leave its ID in community-plugins.json.
+    return ['excel-tool', 'table-tune'].some(id =>
+        !!manager?.plugins?.[id] ||
+        (!!manager?.enabledPlugins?.has(id) && (!manager.manifests || !!manager.manifests[id])),
+    );
 }
 
 /**

@@ -1307,6 +1307,12 @@ module.exports = class TableColumnResize extends Plugin {
   buildRow(cells) {
     return '| ' + cells.join(' | ') + ' |';
   }
+  buildTableSource(header, grid, separator) {
+    const indent = header.match(/^[ \t]*/)[0];
+    return [grid[0], separator, ...grid.slice(1)]
+      .map(row => indent + this.buildRow(row))
+      .join('\n');
+  }
   tableSourceInfo(editor, table) {
     const doc = editor.getDoc();
     const cm = editor.cm;
@@ -1597,13 +1603,13 @@ module.exports = class TableColumnResize extends Plugin {
     if (axis === 'row') grid.splice(at,0,Array(oldCols).fill(''));
     else { grid.forEach(row=>row.splice(at,0,'')); sep.splice(at,0,'---'); }
     grid[0][0] = this.encodeInvisibleUid(uid)+grid[0][0];
-    const lines = [this.buildRow(grid[0]),this.buildRow(sep),...grid.slice(1).map(row=>this.buildRow(row))];
+    const text = this.buildTableSource(info.header, grid, sep);
     const widths = (this.getWidths(path,oldTid,oldCols) || Array.from(table.querySelector('colgroup')?.children || [], c=>c.style.width)).slice();
     while (widths.length < oldCols) widths.push('80px');
     const heights = (this.getRowHeights(path,oldTid) || Array(oldRows).fill(null)).slice();
     while (heights.length < oldRows) heights.push(null);
     if (axis === 'col') widths.splice(at,0,'80px'); else heights.splice(at,0,null);
-    try { this.replaceTableRange(editor,lines.join('\n'),info.toPos(info.from),info.toPos(info.to)); }
+    try { this.replaceTableRange(editor,text,info.toPos(info.from),info.toPos(info.to)); }
     catch (e) { new Notice('TableTune: 插入失败'); return; }
     this.setWidths(path,tid,widths); this.setRowHeights(path,tid,heights);
     if (!this.merges[path]) this.merges[path]={};
@@ -1694,10 +1700,9 @@ module.exports = class TableColumnResize extends Plugin {
     const sepCells = this.splitRow(info.sep);
     while (sepCells.length < colCount) sepCells.push('---');
     const newSep = axis === 'col' ? sepCells.filter((_, c) => !removed(c)) : sepCells;
-    const lines = [this.buildRow(newGrid[0]), this.buildRow(newSep)];
-    for (let r = 1; r < newGrid.length; r++) lines.push(this.buildRow(newGrid[r]));
+    const text = this.buildTableSource(info.header, newGrid, newSep);
     try {
-      this.replaceTableRange(editor,lines.join('\n'), info.toPos(info.from), info.toPos(info.to));
+      this.replaceTableRange(editor,text, info.toPos(info.from), info.toPos(info.to));
     } catch (e) {
       new Notice('TableTune: 表格删除失败');
       return;

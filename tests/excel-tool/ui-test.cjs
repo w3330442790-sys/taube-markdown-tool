@@ -176,7 +176,7 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    const lines=[p.buildRow([p.encodeInvisibleUid('scratch')+'A','B']),p.buildRow(['---','---']),p.buildRow(['甲','乙'])];
    editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:lines.join('\n')}});
    const host=document.createElement('div');host.id='scratch-host';host.className='cm-content';document.querySelector('.workspace-leaf-content').prepend(host);
-   window.renderScratch=()=>{host.replaceChildren();const table=document.createElement('table');table.id='scratch';table.dataset.fixtureUid='scratch';const rows=editor.getValue().split('\n').filter((_,i)=>i!==1).map(line=>p.splitRow(line));rows.forEach((cells,r)=>{const tr=(r===0?table.createTHead():table.tBodies[0]||table.createTBody()).insertRow();cells.forEach(text=>{const c=document.createElement(r===0?'th':'td');c.textContent=text;tr.appendChild(c);});});host.appendChild(table);p.enhance(table,{sourcePath:'sample.md'},true);return table;};
+   window.renderScratch=()=>{host.replaceChildren();const table=document.createElement('table');table.id='scratch';table.dataset.fixtureUid='scratch';const lines=editor.getValue().split('\n').filter(line=>p.isTableRowLine(line));const rows=lines.filter((_,i)=>i!==1).map(line=>p.splitRow(line));rows.forEach((cells,r)=>{const tr=(r===0?table.createTHead():table.tBodies[0]||table.createTBody()).insertRow();cells.forEach(text=>{const c=document.createElement(r===0?'th':'td');c.textContent=text;tr.appendChild(c);});});host.appendChild(table);p.enhance(table,{sourcePath:'sample.md'},true);return table;};
    const nativeMapping=Object.getPrototypeOf(Object.getPrototypeOf(p)).tableSourceInfo;
    p.tableSourceInfo=(ed,t)=>t.id==='scratch'?nativeMapping.call(p,ed,t):beforeScratchMapping(ed,t);
    const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.selectRect(table,1,0,1,1,'sample.md',p.tableId(table));
@@ -186,8 +186,37 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   await page.evaluate(()=>{const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.activateCell(table,table.rows[1].cells[0]);});
   a.equal(await page.getByRole('button',{name:'拆分单元格',exact:true}).isEnabled(),true);await page.getByRole('button',{name:'拆分单元格',exact:true}).click();
   a.equal(await page.evaluate(()=>p.merges['sample.md'].uscratch.length),0);a.equal(await page.locator('#scratch .tcr-merged-hidden').count(),0);a.match(await page.evaluate(()=>editor.getValue()),/甲<br>乙/);
-  await page.evaluate(()=>{document.getElementById('scratch-host').remove();p.tableSourceInfo=beforeScratchMapping;editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:beforeScratchSource}});p.clearMergeSelection();p._toolbarAnchor=null;p.scanEdit();p.activateCell(document.getElementById('existing'),document.getElementById('existing').rows[1].cells[0]);});
  });
+ await check('toolbar inserts and deletes rows and columns inside a Markdown list',async()=>{
+  await page.evaluate(()=>{
+   const lines=['- List item','','  '+p.buildRow([p.encodeInvisibleUid('scratch')+'A','B']),'  | :--- | ---: |','  | 甲 | 乙 |','  | 丙 | 丁 |','','After the list'];
+   editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:lines.join('\n')}});
+  });
+  const select=async (r,c)=>page.evaluate(([row,col])=>{
+   const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.activateCell(table,table.rows[row].cells[col]);
+  },[r,c]);
+  const button=name=>page.locator('.tt-toolbar').getByRole('button',{name,exact:true});
+  const lines=()=>page.evaluate(()=>p.stripTableIdentity(editor.getValue()).split('\n'));
+  const original=await lines();
+  await select(1,0);await button('在下方插入行').click();
+  a.deepEqual(await lines(),[...original.slice(0,5),'  |  |  |',...original.slice(5)]);
+  await select(1,0);await button('在上方插入行').click();
+  a.equal((await lines())[4],'  |  |  |');
+  await select(2,0);await button('在右侧插入列').click();
+  a.equal((await lines())[5],'  | 甲 |  | 乙 |');
+  await select(2,0);await button('在左侧插入列').click();
+  a.equal((await lines())[5],'  |  | 甲 |  | 乙 |');
+  await select(1,0);await action('删除行','确认删除行');
+  a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');
+  await select(1,0);await action('删除列','确认删除列');
+  a.equal((await lines())[4],'  | 甲 |  | 乙 |');
+  await select(1,0);await button('撤销').click();
+  a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');
+  await select(1,0);await button('重做').click();
+  a.equal((await lines())[4],'  | 甲 |  | 乙 |');
+  a.equal((await lines())[3],'  | :--- | --- | ---: |');
+ });
+ await page.evaluate(()=>{document.getElementById('scratch-host').remove();p.tableSourceInfo=beforeScratchMapping;editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:beforeScratchSource}});p.clearMergeSelection();p._toolbarAnchor=null;p.scanEdit();p.activateCell(document.getElementById('existing'),document.getElementById('existing').rows[1].cells[0]);});
  await page.evaluate(()=>{document.querySelector('.workspace-leaf-content').style.width='';document.getElementById('existing').parentElement.scrollTop=0;document.getElementById('existing').parentElement.scrollLeft=0;Object.defineProperty(window,'visualViewport',{configurable:true,value:{width:1000,height:1100,offsetTop:0,offsetLeft:0,addEventListener(){},removeEventListener(){}}});p._ttViewport();});
  await page.screenshot({path:path.join(out,'android-table-dark.png'),fullPage:true});
  await page.evaluate(()=>document.body.classList.remove('theme-dark'));await page.screenshot({path:path.join(out,'android-table-light.png'),fullPage:true});
