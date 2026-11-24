@@ -24,14 +24,25 @@ module.exports=class TabletTableTools extends Base{
    const cell=this.cellAtCursor();const table=cell?.closest?.('table');
    if(table)this.activateCell(table,cell);else if(this.targetSelection())this.refreshMergeToolbar();else new Notice('请先点击一个表格单元格');
   }});
-  const viewport=()=>{this.positionMergeToolbar(this.targetSelection());this.updateScrollHeights();};
-  document.addEventListener('scroll',viewport,true);
-  window.visualViewport?.addEventListener('resize',viewport);window.visualViewport?.addEventListener('scroll',viewport);
-  this._ttViewport=viewport;
-  this._ttOutside=e=>{const sel=this.targetSelection();if(sel&&!sel.table.contains(e.target)&&!e.target.closest?.('.tcr-merge-toolbar,.menu,.tt-open,.tcr-axis-rail')){this._ttToolsOpen=false;this._activeCell=null;this._touchRange=null;this.hideMergeToolbar();}};
+  this._ttViewport=()=>{
+   if(this._ttViewportFrame||!this._toolbar||this._toolbar.style.display==='none')return;
+   this._ttViewportFrame=requestAnimationFrame(()=>{
+    this._ttViewportFrame=0;
+    if(this._toolbar&&this._toolbar.style.display!=='none')this.positionMergeToolbar(this.targetSelection());
+   });
+  };
+  this._ttResize=()=>{this.updateScrollHeights();this._ttViewport();};
+  document.removeEventListener('scroll',this._toolbarViewport,true);
+  document.addEventListener('scroll',this._ttViewport,true);
+  window.visualViewport?.addEventListener('resize',this._ttResize);
+  window.visualViewport?.addEventListener('scroll',this._ttViewport);
+  this._ttOutside=e=>{const table=(this._touchRange||this._sel||this._activeCell)?.table;if(table&&!table.contains(e.target)&&!e.target.closest?.('.tcr-merge-toolbar,.menu,.tt-open,.tcr-axis-rail'))this.closeTableTools();};
   document.addEventListener('pointerdown',this._ttOutside,true);
-  this.registerEvent(this.app.workspace.on('active-leaf-change',()=>{this._activeCell=null;this._touchRange=null;this.hideMergeToolbar();}));
-  this.app.workspace.onLayoutReady(()=>{if(this._ttLoaded){this.processActive();this.scanEdit();this.reflow();}});
+  this.registerEvent(this.app.workspace.on('active-leaf-change',()=>{
+   const table=(this._touchRange||this._sel||this._activeCell)?.table;
+   if(table&&this.tableNotePath(table)!==this.currentPath())this.closeTableTools();
+  }));
+  this.app.workspace.onLayoutReady(()=>{if(this._ttLoaded){this.processActive();this.scanEdit();}});
  }
  persist(){
   const data={...this._savedData,widths:this.widths,rowHeights:this.rowHeights,merges:this.merges,tableDims:this.tableDims,alignments:this.alignments||{},cellStyles:this.cellStyles||{},tableOptions:this.tableOptions||{}};
@@ -48,9 +59,9 @@ module.exports=class TabletTableTools extends Base{
   const rect=cell.getBoundingClientRect();
   this._toolbarAnchor={table,cell,x:Number.isFinite(event?.clientX)?event.clientX-rect.left:rect.width/2,y:Number.isFinite(event?.clientY)?event.clientY-rect.top:0};
  }
- isCellEdge(event,cell){
+ isCellEdge(event,cell,limit=10){
   const r=cell.getBoundingClientRect(),x=event.clientX-r.left,y=event.clientY-r.top;
-  return Math.min(x,r.width-x,y,r.height-y)<=10;
+  return Math.min(x,r.width-x,y,r.height-y)<=limit;
  }
  activateCell(table,cell){
   if(this._sel&&this._sel.table!==table)this.clearMergeSelection();
@@ -60,27 +71,36 @@ module.exports=class TabletTableTools extends Base{
   this._ttToolsOpen=true;this._activeCell={table,path,tid,r1:merge?.r??r,r2:merge?merge.r+merge.rowspan-1:r,c1:merge?.c??c,c2:merge?merge.c+merge.colspan-1:c};this.refreshMergeToolbar();
  }
  startCellDrag(e,table,cell,path,tid){
+  if(e.isPrimary===false)return;
   this.rememberToolbarAnchor(table,cell,e);
-  if(this._touchRange?.table===table){
-   // A selection gesture uses two taps, never a scrolling drag.
+  const mode=this._touchRange?.table===table?this._touchRange:null;
+  const touch=e.pointerType==='touch'||e.pointerType==='pen';
+  if(mode||(!e.shiftKey&&touch&&this.isCellEdge(e,cell,4))){
+   // Commit only a completed tap. A swipe or another finger must not change
+   // the range or consume its starting point.
    e.preventDefault();e.stopImmediatePropagation();
    this._tapCleanup?.();const x=e.clientX,y=e.clientY,id=e.pointerId;
-   const clear=()=>{window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',clear,true);if(this._tapCleanup===clear)this._tapCleanup=null;};
-   const up=ev=>{if(ev.pointerId!==id)return;clear();if(Math.hypot(ev.clientX-x,ev.clientY-y)>12)return;
-    const r=this.cellRow(cell),c=this.cellCol(cell),mode=this._touchRange,anchor=mode?.anchor;
-    if(!mode||mode.table!==table)return;
-    if(mode.axis)this.selectTableAxis(table,{dataset:{tcrAxis:mode.axis,tcrIndex:String(mode.axis==='row'?r:c)},closest:()=>null},{shiftKey:!!anchor});
-    else this.selectRect(table,anchor?anchor.r:r,anchor?anchor.c:c,r,c,path,this.tableId(table));
-    if(anchor)this._touchRange=null;else this._touchRange={table,axis:mode.axis,anchor:{r,c}};
-    this.refreshMergeToolbar();
+   const moved=ev=>Math.hypot(ev.clientX-x,ev.clientY-y)>14;
+   const clear=()=>{
+    window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);
+    window.removeEventListener('pointercancel',cancel,true);window.removeEventListener('blur',blur);
+    if(this._tapCleanup===clear)this._tapCleanup=null;
    };
-   window.addEventListener('pointerup',up,true);window.addEventListener('pointercancel',clear,true);this._tapCleanup=clear;return;
+   const move=ev=>{if(ev.pointerId===id&&moved(ev))clear();};
+   const cancel=ev=>{if(ev.pointerId===id)clear();};
+   const blur=ev=>{if(ev.target===window)clear();};
+   const up=ev=>{if(ev.pointerId!==id)return;clear();
+    if(!table.isConnected||!cell.isConnected||path!==this.currentPath()||moved(ev))return;
+    const {r,c}=this.logicalPointInCell(table,cell,x,y,path,tid),anchor=mode?.anchor;
+    if(mode&&this._touchRange!==mode)return;
+    this._touchRange=mode&&!anchor?{...mode,anchor:{r,c}}:null;this._ttToolsOpen=true;
+    if(mode?.axis)this.selectTableAxis(table,{dataset:{tcrAxis:mode.axis,tcrIndex:String(mode.axis==='row'?r:c)},closest:()=>null},{shiftKey:!!anchor});
+    else this.selectRect(table,anchor?.r??r,anchor?.c??c,r,c,path,this.tableId(table));
+   };
+   window.addEventListener('pointermove',move,true);window.addEventListener('pointerup',up,true);
+   window.addEventListener('pointercancel',cancel,true);window.addEventListener('blur',blur);this._tapCleanup=clear;return;
   }
-  if(!e.shiftKey&&this.isCellEdge(e,cell)){
-   e.preventDefault();e.stopImmediatePropagation();this.rememberToolbarAnchor(table,cell,e);this._ttToolsOpen=true;
-   this.selectRect(table,this.cellRow(cell),this.cellCol(cell),this.cellRow(cell),this.cellCol(cell),path,this.tableId(table));return;
-  }
-  if(e.pointerType==='touch'||e.pointerType==='pen'){
+  if(touch){
    this._ttToolsOpen=false;
    this.clearMergeSelection();this.resetNativeCellSelection(table);table.classList.add('tcr-cell-editing');
    const r=this.cellRow(cell),c=this.cellCol(cell);this._activeCell={table,path,tid,r1:r,r2:r,c1:c,c2:c};return;
@@ -90,7 +110,11 @@ module.exports=class TabletTableTools extends Base{
   super.startCellDrag(e,table,cell,path,tid);
   this.refreshMergeToolbar();
  }
- clearMergeSelection(preserveNative=false){super.clearMergeSelection(preserveNative);}
+ closeTableTools(){
+  this._tapCleanup?.();this._cellDragCleanup?.();
+  this._touchRange=null;this._activeCell=null;this._ttToolsOpen=false;this._toolbarAnchor=null;
+  super.closeTableTools();
+ }
  startDrag(e,colgroup,i,path,tid){
   const cell=e.currentTarget?.closest('td,th'),table=cell?.closest('table');
   if(cell&&table){this.clearMergeSelection();this.rememberToolbarAnchor(table,cell,e);this.activateCell(table,cell);}
@@ -103,7 +127,7 @@ module.exports=class TabletTableTools extends Base{
   }
   this._ttToolsOpen=true;return super.selectTableAxis(table,handle,event,context);
  }
- enhance(table,ctx,allowDrag){super.enhance(table,ctx,allowDrag);if(table.dataset.tcr)this.applyExtras(table);}
+ enhance(table,ctx,allowDrag){const enhanced=table.dataset.tcr;super.enhance(table,ctx,allowDrag);if(!enhanced&&table.dataset.tcr)this.applyExtras(table);}
  reflowTable(table){super.reflowTable(table);if(table.dataset.tcr)this.applyExtras(table);}
  applyCellAlignments(table,path,tid){super.applyCellAlignments(table,path,tid);this.paintStyles(table,path,tid);}
  paintStyles(table,path,tid){
@@ -115,7 +139,7 @@ module.exports=class TabletTableTools extends Base{
   }));
  }
  applyRowHeights(table,path,tid){
-  const saved=this.getRowHeights(path,tid)||[];
+  const saved=table._tcrRowHeights||this.getRowHeights(path,tid)||[];
   Array.from(table.rows).forEach((row,r)=>{if(parseFloat(saved[r])>0)row.dataset.ttRowHeight='true';else if(row.dataset.ttRowHeight){row.style.height='';delete row.dataset.ttRowHeight;}});
   super.applyRowHeights(table,path,tid);
  }
@@ -138,14 +162,14 @@ module.exports=class TabletTableTools extends Base{
   if(this._ttCleanups?.has(table))return;
   const open=document.createElement('button');open.type='button';open.className='tt-open';open.title='表格工具';open.setAttribute('aria-label','打开此表格工具');renderIcon(open,'table-2');
   open.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();});
-  open.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();this.rememberToolbarAnchor(table,table.rows[0].cells[0],e);this._ttToolsOpen=true;this.selectWhole(table);});
+  open.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();this.closeTableTools();this.rememberToolbarAnchor(table,table.rows[0].cells[0],e);this._ttToolsOpen=true;this.selectWhole(table);});
   const activate=e=>{
    const cell=e.target.closest?.('td,th');
    if(cell?.closest('table')!==table)return;
    if(table.closest('.cm-content')){
-    // The editor handles edges and drags on pointer events. A mouse click can
-    // open the tools after the native caret has been placed.
-    if(e.pointerType!=='mouse'||this._sel||this._textRange||e.target.closest('.tcr-handle,.tt-row-handle'))return;
+    // A click on text edits without an overlay. The border remains a shortcut
+    // to the tools; touch and range gestures are handled on pointer events.
+    if(e.pointerType!=='mouse'||!this.isCellEdge(e,cell,4)||this._sel||this._textRange||e.target.closest('.tcr-handle,.tt-row-handle'))return;
    }else if(e.pointerType!=='mouse'&&!this.isCellEdge(e,cell)){
     this._ttToolsOpen=false;this.hideMergeToolbar();return;
    }
@@ -157,11 +181,15 @@ module.exports=class TabletTableTools extends Base{
   const scroll=()=>{if(this._sel?.table===table)this.positionSelectionOverlay();};host.addEventListener('scroll',scroll,{passive:true});
   let observer;
   if(typeof ResizeObserver!=='undefined'){let pending=0;observer=new ResizeObserver(()=>{
-   if(pending)return;pending=requestAnimationFrame(()=>{pending=0;if(!table.isConnected)return;this.setScrollHeight(host);this.positionMergeToolbar(this.targetSelection());if(this._sel?.table===table)this.positionSelectionOverlay();});
+   if(pending)return;pending=requestAnimationFrame(()=>{pending=0;if(!table.isConnected)return;if(host.classList.contains('tt-scroll-vertical'))this.setScrollHeight(host);if(this._sel?.table===table)this.positionSelectionOverlay();this._ttViewport();});
   });observer.observe(host);}
   this._ttCleanups?.set(table,()=>{open.remove();table.removeEventListener('click',activate);host.removeEventListener('scroll',scroll);observer?.disconnect();host.classList.remove('tt-scroll','tt-scroll-vertical');host.style.removeProperty('--tt-scroll-height');});
  }
- scanEdit(){super.scanEdit();if(this._ttCleanups)for(const [table,cleanup]of this._ttCleanups)if(!table.isConnected){cleanup();this._ttCleanups.delete(table);}}
+ cleanupDetachedTables(){
+  super.cleanupDetachedTables();
+  if(this._touchRange && !this._touchRange.table.isConnected)this.closeTableTools();
+  if(this._ttCleanups)for(const [table,cleanup]of this._ttCleanups)if(!table.isConnected){cleanup();this._ttCleanups.delete(table);}
+ }
  setScrollHeight(host){
   const viewport=window.visualViewport,height=viewport?.height||window.innerHeight;
   const pane=host.closest('.workspace-leaf-content,.markdown-source-view,.markdown-preview-view'),paneHeight=pane?.getBoundingClientRect().height||height;
@@ -184,10 +212,22 @@ module.exports=class TabletTableTools extends Base{
   const tracks=table.classList.contains('tcr-grid-table')?getComputedStyle(table).gridTemplateRows.split(' ').map(parseFloat):[];
   const height=tracks[r]||parseFloat(before[r])||table.rows[r].getBoundingClientRect().height||32;
   let final=height;const y=e.clientY,id=e.pointerId,handle=e.currentTarget;try{handle.setPointerCapture(id)}catch(_){}
-  const move=ev=>{if(ev.pointerId!==id)return;ev.preventDefault();final=Math.max(24,Math.round(height+ev.clientY-y));const next=before.slice();next[r]=final+'px';this.setRowHeights(path,tid,next);this.applyRowHeights(table,path,tid);this.applyMerges(table,path,tid);};
-  const cleanup=()=>{window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',cancel,true);handle.removeEventListener('lostpointercapture',cancel);try{handle.releasePointerCapture(id)}catch(_){}this._rowCleanup=null;};
-  const cancel=()=>{cleanup();this.setRowHeights(path,tid,before);this.reflowTable(table);};
-  const up=ev=>{if(ev.pointerId!==id)return;cleanup();this.setRowHeights(path,tid,before);this.runTableHistory(()=>{const next=before.slice();next[r]=final+'px';const finalTid=this.commitColumnWidths(table,path,this.currentWidths(table));if(!finalTid)return;this.setRowHeights(path,finalTid,next);this.persist();},snapshot);this.reflowTable(table);};
+  const move=ev=>{if(ev.pointerId!==id||!table.isConnected)return;ev.preventDefault();final=Math.max(24,Math.round(height+ev.clientY-y));const next=before.slice();next[r]=final+'px';table._tcrRowHeights=next;this.applyRowHeights(table,path,tid);};
+  const cleanup=()=>{window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',cancel,true);handle.removeEventListener('lostpointercapture',cancel);delete table._tcrRowHeights;try{handle.releasePointerCapture(id)}catch(_){}this._rowCleanup=null;};
+  const cancel=()=>{cleanup();if(table.isConnected)this.reflowTable(table);};
+  const up=ev=>{
+   if(ev.pointerId!==id)return;
+   const next=table._tcrRowHeights;cleanup();
+   if(!next||!table.isConnected)return;
+   const saved=this.runTableHistory(()=>{
+    const finalTid=this.commitColumnWidths(table,path,this.currentWidths(table));
+    if(finalTid)this.setRowHeights(path,finalTid,next);
+    return finalTid;
+   },snapshot);
+   if(saved)this.persist();
+   else new Notice('无法定位当前表格，行高调整已取消');
+   this.reflowTable(table);
+  };
   this._rowCleanup=cancel;window.addEventListener('pointermove',move,{capture:true,passive:false});window.addEventListener('pointerup',up,true);window.addEventListener('pointercancel',cancel,true);handle.addEventListener('lostpointercapture',cancel);
  }
  currentWidths(table){return Array.from(table.querySelector('colgroup')?.children||[],c=>c.style.width||'80px');}
@@ -238,11 +278,11 @@ module.exports=class TabletTableTools extends Base{
   }
   this.cellStyles[sel.path]||={};this.cellStyles[sel.path][sel.tid]=map;
  });}
- mergeSelectedCells(){
+ mergeSelectedCells(contentMode){
   const sel=this._sel;if(!sel)return;
   const reg={r:sel.r1,c:sel.c1,rowspan:sel.r2-sel.r1+1,colspan:sel.c2-sel.c1+1};
   if(core.freezeConflict([reg],this.optionsFor(sel.path,sel.tid))){new Notice('合并区域跨过固定边界，请先关闭对应固定选项');return;}
-  super.mergeSelectedCells();
+  super.mergeSelectedCells(contentMode);
  }
  setMerge(path,tid,reg){
   const changed=super.setMerge(path,tid,reg);
@@ -317,7 +357,26 @@ module.exports=class TabletTableTools extends Base{
  }
  menu(button,items){
   const menu=new Menu();for(const [title,run,checked]of items)menu.addItem(item=>{item.setTitle(title);if(checked!==undefined)item.setChecked(checked);item.onClick(()=>{run();this.refreshMergeToolbar();});});
-  const rect=button.getBoundingClientRect();menu.showAtPosition({x:rect.left,y:rect.top});
+  const rect=button.getBoundingClientRect();
+  const toolbar=button.closest('.tcr-merge-toolbar')?.getBoundingClientRect();
+  menu.showAtPosition({x:rect.left,y:(toolbar?.bottom??rect.bottom)+4});
+ }
+ populateTableContextMenu(menu,cell,sel){
+  menu.addItem(item=>item.setTitle('复制内容').onClick(()=>{
+   if(this._sel===sel)void this.copyTable(true);
+  }));
+  menu.addItem(item=>item.setTitle('粘贴').onClick(()=>this.pasteTableText(sel)));
+  super.populateTableContextMenu(menu,cell,sel);
+ }
+ async pasteTableText(sel){
+  try{
+   const text=await navigator.clipboard.readText();
+   if(!text || this._sel!==sel || !sel.table.isConnected)return;
+   this.handleTablePaste({
+    target:sel.table,clipboardData:{getData:type=>type==='text/plain'?text:''},
+    preventDefault(){},stopImmediatePropagation(){}
+   });
+  }catch(e){new Notice('无法读取剪贴板，可用 Ctrl+V 或系统粘贴');}
  }
  ensureToolbarSelection(){
   const sel=this.targetSelection();if(!sel)return null;
@@ -357,7 +416,10 @@ module.exports=class TabletTableTools extends Base{
    });
    const original=run=>()=>{const selection=this.ensureToolbarSelection();if(!selection)return;run(selection);this.refreshMergeToolbar();};
    const region=this.isMergeRegion(sel);
-   add('合并单元格',original(()=>this.mergeSelectedCells()),undefined,{disabled:!!sel.axis||this.selectionCells(sel).size<2||region||!this.selectionIsRectangle(sel)});
+   add('合并单元格',b=>{
+    const selection=this.ensureToolbarSelection();
+    if(selection)this.menu(b,this.mergeContentActions(selection));
+   },undefined,{disabled:!!sel.axis||this.selectionCells(sel).size<2||region||!this.selectionIsRectangle(sel)});
    add('拆分单元格',original(()=>this.splitSelectedCell()),undefined,{disabled:!!sel.axis||!region});
    for(const [value,label,axis]of [['left','左对齐','horizontal'],['center','居中对齐','horizontal'],['right','右对齐','horizontal'],['top','顶部对齐','vertical'],['middle','垂直居中','vertical'],['bottom','底部对齐','vertical']])
     add(label,original(()=>this.setSelectionAlignment(value,axis)),this._sel?this.selectionAlignment(axis)===value:undefined);
@@ -375,7 +437,7 @@ module.exports=class TabletTableTools extends Base{
   }
   add('更多',b=>this.menu(b,this._toolbarActions.filter(v=>!v.disabled).map(v=>[v.label,()=>v.action(b)])),undefined,{fixed:true});
   add('自定义工具栏',b=>this.customizeToolbar(b),undefined,{fixed:true});
-  add('关闭',()=>{this._touchRange=null;this._activeCell=null;this._ttToolsOpen=false;this._toolbarAnchor=null;this.clearMergeSelection();},undefined,{fixed:true});this.positionMergeToolbar(sel);
+  add('关闭',()=>this.closeTableTools(),undefined,{fixed:true});this.positionMergeToolbar(sel);
  }
  showMergeToolbar(show){
   const exists=!!this._toolbar;super.showMergeToolbar(show);
@@ -409,7 +471,8 @@ module.exports=class TabletTableTools extends Base{
  }
  onunload(){
   this._ttLoaded=false;this._tapCleanup?.();this._rowCleanup?.();
-  window.visualViewport?.removeEventListener('resize',this._ttViewport);window.visualViewport?.removeEventListener('scroll',this._ttViewport);
+  window.visualViewport?.removeEventListener('resize',this._ttResize);window.visualViewport?.removeEventListener('scroll',this._ttViewport);
+  if(this._ttViewportFrame)cancelAnimationFrame(this._ttViewportFrame);
   document.removeEventListener('scroll',this._ttViewport,true);
   document.removeEventListener('pointerdown',this._ttOutside,true);
   for(const cleanup of this._ttCleanups?.values()||[])cleanup();this._ttCleanups?.clear();

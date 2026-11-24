@@ -70,7 +70,7 @@ export function createClozeExtension() {
         }
 
         update(update: ViewUpdate): void {
-            if (update.docChanged || update.viewportChanged) this.decorations = buildClozeDecorations(update.view);
+            if (update.docChanged) this.decorations = buildClozeDecorations(update.view);
         }
     }, {
         decorations: value => value.decorations,

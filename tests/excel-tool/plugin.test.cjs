@@ -12,6 +12,55 @@ function fixture(){
  return {p,notices};
 }
 const plain=x=>JSON.parse(JSON.stringify(x));
+test('table mapping reuses the same long document and refreshes after a source edit',()=>{
+ const {p}=fixture();let reads=0;
+ const lines=Array.from({length:20661},()=> '复习内容');
+ for(let i=0;i<58;i++)lines.splice(i*300,3,'| 名称 | 要点 |','| --- | --- |','| 项目 | 说明 |');
+ const makeDoc=()=>({lines:lines.length,line:n=>{reads++;return{text:lines[n-1]};}});
+ const editor={getDoc:()=>editor,cm:{state:{doc:makeDoc()},posAtDOM:()=>0}};
+ const cells=['名称','要点'].map(textContent=>({textContent}));
+ const table={rows:[{},{}],querySelector:()=>cells[0],querySelectorAll:()=>cells};
+ p.tablePeers=()=>[table];
+ a.equal(p.tableSourceInfo(editor,table).startLine,0);
+ const firstReads=reads;
+ for(let i=0;i<15;i++)a.equal(p.tableSourceInfo(editor,table).startLine,0);
+ a.ok(reads-firstReads<100, `unchanged source read ${reads-firstReads} lines`);
+ lines[2]='| 新条目 | 说明 |';editor.cm.state.doc=makeDoc();
+ a.equal(p.tableSourceInfo(editor,table).grid[1][0],'新条目');
+});
+test('a first resize never overwrites another table sharing its legacy width key',()=>{
+ const {p}=fixture(),table={dataset:{},isConnected:true};
+ p.app={workspace:{}};
+ const editor={replaceRange(){}};
+ p.activeEditor=()=>editor;p.tableId=()=> 'legacy';
+ p.tableSourceInfo=()=>({uid:null,markerLine:-1,header:'| A | B |',from:0,toPos:i=>i});
+ p.widths={'note.md':{legacy:['100px','120px']}};
+ const tid=p.commitColumnWidths(table,'note.md',['150px','120px']);
+ a.deepEqual(plain(p.widths['note.md'].legacy),['100px','120px']);
+ a.deepEqual(plain(p.widths['note.md'][tid]),['150px','120px']);
+});
+test('resizing a copy gives it its own source identity and keeps the original widths',()=>{
+ const {p}=fixture(),table={dataset:{},isConnected:true};
+ const marker=p.encodeInvisibleUid('shared');
+ let change;
+ p.app={workspace:{}};
+ p.activeEditor=()=>({replaceRange:(text,from,to)=>{change={text,from,to};}});
+ p.tableId=()=> 'ushared';
+ p.tableSourceInfo=()=>({uid:'shared',sharedUid:true,header:'| '+marker+'标题 |',from:10,toPos:i=>i});
+ p.widths={'note.md':{ushared:['100px']}};
+ const tid=p.commitColumnWidths(table,'note.md',['150px']);
+ a.notEqual(tid,'ushared');
+ a.deepEqual(plain(p.widths['note.md']),{ushared:['100px'],[tid]:['150px']});
+ a.deepEqual(change,{text:p.encodeInvisibleUid(tid.slice(1)),from:12,to:12+marker.length});
+});
+test('split panes resolve table settings to their owning note',()=>{
+ const {p}=fixture(),table={dataset:{}};
+ p.app={workspace:{getActiveFile:()=>({path:'active.md'}),getLeavesOfType:()=>[
+  {view:{file:{path:'active.md'},contentEl:{contains:()=>false}}},
+  {view:{file:{path:'other.md'},contentEl:{contains:node=>node===table}}}
+ ]}};
+ a.equal(p.tableNotePath(table),'other.md');
+});
 test('persist preserves unknown data and legacy table layout',async()=>{
  const {p}=fixture();p.widths={'note.md':{t:['100px','200px']}};p.merges={'note.md':{t:[{r:1,c:0,rowspan:1,colspan:2}]}};
  a.equal(typeof p.persist,'function');await p.persist();a.deepEqual(plain(p.saved.customFuture),{keep:true});a.deepEqual(plain(p.saved.widths),p.widths);a.deepEqual(plain(p.saved.merges),p.merges);

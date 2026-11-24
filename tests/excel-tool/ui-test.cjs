@@ -19,13 +19,16 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   const mousePage=await desktop.newPage();mousePage.setDefaultTimeout(6000);mousePage.on('pageerror',e=>errors.push(e.message));
   await mousePage.goto(fixtureUrl);await mousePage.waitForFunction(()=>window.ready);
   const bar=mousePage.locator('.tt-toolbar');
-  await check('desktop mouse click opens editing tools and keeps the text caret',async()=>{
+  await check('desktop uses the cell edge for tools and leaves a text click unobstructed',async()=>{
    const target=mousePage.locator('#existing tbody tr').first().locator('td').first();
    await target.evaluate(cell=>{cell.contentEditable='true';});
    await target.click();
-   a.equal(await bar.getByRole('button',{name:'居中对齐',exact:true}).isVisible(),true);
+   a.equal(await bar.isVisible(),false);
    a.equal(await target.evaluate(cell=>cell===document.activeElement),true);
    a.equal(await mousePage.evaluate(()=>!!p._sel),false);
+   const box=await target.boundingBox();
+   await target.click({position:{x:box.width/2,y:2}});
+   a.equal(await bar.getByRole('button',{name:'居中对齐',exact:true}).isVisible(),true);
    await bar.getByRole('button',{name:'关闭',exact:true}).click();
   });
   await check('desktop mouse click opens reading tools and clicking outside closes them',async()=>{
@@ -36,6 +39,109 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    await mousePage.locator('h2').click();
    a.equal(await bar.isVisible(),false);
   });
+  await check('switching to the native cell editor preserves ordinary and merged cell geometry',async()=>{
+   const layouts=await mousePage.evaluate(()=>{
+    const measure=cell=>{const {x,y,width,height}=cell.getBoundingClientRect();return [x,y,width,height];};
+    return [['other',1,0],['existing',2,2]].map(([id,r,c])=>{
+     const cell=document.getElementById(id).rows[r].cells[c],wrapper=document.createElement('div');
+     wrapper.className='table-cell-wrapper';wrapper.innerHTML='<strong>渲染文字</strong><br>第二行<br>第三行<br>第四行';
+     cell.replaceChildren(wrapper);
+     const before=measure(cell),active=document.createElement('div');active.className='table-cell-wrapper';
+     wrapper.style.display='none';cell.appendChild(active);
+     const editorHost=document.createElement('div');editorHost.className='cm-s-obsidian mod-cm6';active.appendChild(editorHost);
+     const cm=new TestCM.view.EditorView({doc:'**渲染文字**<br>第二行',parent:editorHost});
+     const editing=measure(cell);cm.destroy();active.remove();wrapper.style.display='';
+     return {before,editing,after:measure(cell)};
+    });
+   });
+   for(const {before,editing,after} of layouts){a.deepEqual(editing,before);a.deepEqual(after,before);}
+  });
+  await check('opening a formatted header editor does not change the table layout key',async()=>{
+   const keys=await mousePage.evaluate(()=>{
+    const table=document.getElementById('other'),cell=table.rows[0].cells[1],rendered=document.createElement('div');
+    rendered.className='table-cell-wrapper';rendered.innerHTML='<strong>标题</strong>';cell.replaceChildren(rendered);
+    const before=p.baseTableId(table),active=document.createElement('div');active.className='table-cell-wrapper';
+    rendered.style.display='none';cell.appendChild(active);
+    const editorHost=document.createElement('div');editorHost.className='cm-s-obsidian mod-cm6';active.appendChild(editorHost);
+    const cm=new TestCM.view.EditorView({doc:'**标题**',parent:editorHost});
+    const after=p.baseTableId(table);cm.destroy();active.remove();rendered.style.display='';
+    return [before,after];
+   });
+   a.equal(keys[1],keys[0]);
+  });
+  await check('native cell gutters cannot change plain text wrapping or create scrollbars',async()=>{
+   const layout=await mousePage.evaluate(()=>{
+    const style=document.createElement('style');
+    style.textContent=`
+     .fixture-native-cell { font:14px/20px monospace; white-space:break-spaces; padding:0; }
+     .fixture-native-cell .table-cell-wrapper { padding:4px 8px; }
+     .fixture-native-cell .cm-gutters { width:18px; margin-inline-end:24px; }
+     .fixture-native-cell .cm-content,.fixture-native-cell .cm-line { padding:0; min-height:0; }
+     .fixture-native-cell .cm-content.cm-lineWrapping { white-space:break-spaces; overflow-wrap:normal; word-break:normal; }
+     .fixture-native-cell .cm-scroller { font:inherit; }
+    `;
+    document.head.appendChild(style);
+    const table=document.getElementById('other'),cell=table.rows[1].cells[1];
+    const content='Words wrap in several lines here.',rendered=document.createElement('div');
+    cell.classList.add('fixture-native-cell');rendered.className='table-cell-wrapper';rendered.textContent=content;cell.replaceChildren(rendered);
+    const measure=node=>{
+     const origin=cell.getBoundingClientRect(),range=document.createRange();
+     range.selectNodeContents(node);
+     return [...range.getClientRects()].map(({x,y,width,height})=>[x-origin.x,y-origin.y,width,height].map(value=>Math.round(value*10)/10));
+    };
+    const before=measure(rendered.firstChild),active=document.createElement('div');active.className='table-cell-wrapper';
+    rendered.style.display='none';cell.appendChild(active);
+    const cm=new TestCM.view.EditorView({doc:content,parent:active,extensions:[TestCM.view.lineNumbers(),TestCM.view.EditorView.lineWrapping]});
+    const editing=measure(active.querySelector('.cm-line').firstChild),scroller=cm.scrollDOM,gutters=active.querySelector('.cm-gutters');
+    const result={before,editing,gutterDisplay:getComputedStyle(gutters).display,scrollbarWidth:getComputedStyle(scroller).scrollbarWidth,canScroll:getComputedStyle(scroller).overflowY};
+    cm.destroy();active.remove();rendered.style.display='';cell.classList.remove('fixture-native-cell');style.remove();
+    return result;
+   });
+   a.equal(layout.gutterDisplay,'none');
+   a.equal(layout.scrollbarWidth,'none');
+   a.equal(layout.canScroll,'auto');
+   a.deepEqual(layout.editing,layout.before);
+  });
+  await check('mouse drag selects on the first adjacent cell hit from text or the cell edge',async()=>{
+   const run=async edge=>{
+    const table=mousePage.locator('#existing'),row=table.locator('tbody tr').first();
+    await row.locator('td').nth(0).scrollIntoViewIfNeeded();
+    const first=await row.locator('td').nth(0).boundingBox(),second=await row.locator('td').nth(1).boundingBox();
+    const y=first.y+(edge?2:first.height/2);
+    await mousePage.mouse.move(first.x+first.width/2,y);await mousePage.mouse.down();
+    await mousePage.mouse.move(second.x+second.width/2,y);await mousePage.mouse.up();
+    a.deepEqual(await mousePage.evaluate(()=>p._sel&&[p._sel.r1,p._sel.c1,p._sel.r2,p._sel.c2]),[1,0,1,1]);
+   };
+   await run(false);await run(true);
+  });
+  await check('right-click exposes basic actions and can insert a line break at the caret',async()=>{
+   const target=mousePage.locator('#other tbody td').first();
+   await target.evaluate(cell=>{
+    p.clearMergeSelection();
+    const wrapper=document.createElement('div');wrapper.className='table-cell-wrapper';cell.appendChild(wrapper);
+    const cm=window.cellEditor=new TestCM.view.EditorView({doc:'甲乙',parent:wrapper});
+    editor.editorComponent={tableCell:{cm,table:{tableEl:cell.closest('table')}}};
+    cm.dispatch({selection:{anchor:1}});cm.focus();
+   });
+   await target.scrollIntoViewIfNeeded();
+   const point=await mousePage.evaluate(()=>{
+    const caret=cellEditor.coordsAtPos(1);
+    return {x:caret.left,y:(caret.top+caret.bottom)/2};
+   });
+   await mousePage.mouse.click(point.x,point.y,{button:'right'});
+   const menu=mousePage.locator('.menu:visible');
+   for(const name of ['在单元格内换行','复制内容','粘贴','清空内容','在下方插入行','在右侧插入列','删除列'])
+    a.equal(await menu.getByRole('button',{name,exact:true}).isVisible(),true,name);
+   await menu.getByRole('button',{name:'在单元格内换行',exact:true}).click();
+   a.deepEqual(await mousePage.evaluate(()=>[cellEditor.state.doc.toString(),cellEditor.state.selection.main.head]),['甲\n乙',2]);
+   const touch=await mousePage.evaluate(()=>{
+    const event=new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertLineBreak'});
+    cellEditor.contentDOM.dispatchEvent(event);
+    const result=[event.defaultPrevented,cellEditor.state.doc.toString()];
+    cellEditor.destroy();delete editor.editorComponent;return result;
+   });
+   a.deepEqual(touch,[true,'甲\n\n乙']);
+  });
  }finally{await desktop.close();}
  const context=await browser.newContext({viewport:{width:1000,height:1100},hasTouch:true,isMobile:true});const page=await context.newPage();page.setDefaultTimeout(6000);page.on('pageerror',e=>errors.push(e.message));
  await page.goto(fixtureUrl);await page.waitForFunction(()=>window.ready);
@@ -44,6 +150,23 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  const action=async(group,item)=>{await page.getByRole('button',{name:group,exact:true}).click();await page.getByRole('button',{name:item,exact:true}).click();await page.waitForTimeout(60);};
  await check('enabling plugin enhances already open tables without reopening note',async()=>{
   a.equal(await page.locator('#tables .tt-open').count(),2);
+ });
+ await check('a newly visible table does not reflow other mounted tables',async()=>{
+  const touched=await page.evaluate(async()=>{
+   const original=p.reflowTable;
+   const reflowed=[];
+   p.reflowTable=function(table){reflowed.push(table.id);return original.call(this,table);};
+   const table=document.getElementById('other').cloneNode(true);
+   table.id='newly-visible';delete table.dataset.tcr;
+   const host=document.createElement('div');host.className='table-wrapper';host.appendChild(table);
+   document.getElementById('tables').appendChild(host);
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   const mounted=table.dataset.tcr;
+   p.reflowTable=original;host.remove();
+   return {mounted,reflowed};
+  });
+  a.equal(touched.mounted,'1');
+  a.ok(!touched.reflowed.includes('existing')&&!touched.reflowed.includes('other'),JSON.stringify(touched));
  });
  await check('ordinary text tap keeps tools closed; edge tap opens icon popup above the point',async()=>{
   await cell(1,0).tap();a.equal(await page.locator('.tt-toolbar:visible').count(),0);
@@ -95,6 +218,19 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   await page.evaluate(()=>{document.getElementById('existing').parentElement.scrollLeft=0;});
  });
  await check('normal touch edits without installing range-drag listeners or opening tools',async()=>{await cell(1,0).tap();a.equal(await page.evaluate(()=>!!p._drag),false);a.equal(await page.evaluate(()=>!!p._sel),false);a.equal(await page.locator('.tt-toolbar:visible').count(),0);await edge(cell(1,0));});
+ await check('a touch swipe returning to its start does not select, and Escape exits range mode',async()=>{
+  const state=await page.evaluate(()=>{
+   const table=document.getElementById('existing'),cell=table.rows[1].cells[0],rect=cell.getBoundingClientRect();
+   p.clearMergeSelection();p._touchRange={table,anchor:null};
+   const pointer=(target,type,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,isPrimary:true,pointerId:19,pointerType:'touch',clientX:rect.left+x,clientY:rect.top+12}));
+   pointer(cell,'pointerdown',30);pointer(window,'pointermove',65);pointer(window,'pointerup',30);
+   const afterSwipe={range:!!p._sel,anchor:p._touchRange.anchor};
+   document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));
+   return {afterSwipe,rangeMode:!!p._touchRange,listener:!!p._tapCleanup};
+  });
+  a.deepEqual(state,{afterSwipe:{range:false,anchor:null},rangeMode:false,listener:false});
+  await edge(cell(1,0));
+ });
  await check('icon toolbar touch targets are at least 40px',async()=>{const sizes=await page.locator('.tt-toolbar button').evaluateAll(bs=>bs.map(b=>[b.getBoundingClientRect().width,b.getBoundingClientRect().height]));a.ok(sizes.length&&sizes.every(([w,h])=>w>=40&&h>=40));});
  await check('customization persists hidden icons without removing commands or table data',async()=>{
   await action('自定义工具栏','显示：居中对齐');a.equal(await page.locator('.tt-toolbar').getByRole('button',{name:'居中对齐',exact:true}).count(),0);
@@ -125,11 +261,30 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  await check('cancelled column resize restores widths without persisting partial drag',async()=>{
   const state=await page.evaluate(()=>{const table=document.getElementById('existing'),before=JSON.stringify(p.widths['sample.md'].uexisting),handle=table.querySelector('.tcr-handle');handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:9,pointerType:'touch',button:0,clientX:200,clientY:200}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:9,pointerType:'touch',clientX:300,clientY:200}));window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:9,pointerType:'touch'}));return {before,after:JSON.stringify(p.widths['sample.md'].uexisting),resizing:!!table.dataset.tcrResizing}});a.equal(state.after,state.before);a.equal(state.resizing,false);
  });
+ await check('dragging a column leaves the other table width and saved entry untouched',async()=>{
+  const state=await page.evaluate(()=>{
+   const table=document.getElementById('existing'),other=document.getElementById('other');
+   const snapshot=()=>({target:p.currentWidths(table),other:p.currentWidths(other),saved:JSON.stringify(p.widths['sample.md'])});
+   const before=snapshot(),handle=table.querySelector('.tcr-handle');
+   const pointer=(target,type,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerId:23,pointerType:'touch',button:0,clientX:x}));
+   pointer(handle,'pointerdown',200);pointer(window,'pointermove',240);
+   const during=snapshot();pointer(window,'pointerup',240);
+   const after=snapshot();TestCM.commands.undo(editor.cm);
+   return {before,during,after};
+  });
+  a.notDeepEqual(state.before.target,state.during.target);
+  a.equal(state.during.saved,state.before.saved);
+  a.deepEqual(state.during.other,state.before.other);
+  a.deepEqual(state.after.other,state.before.other);
+  const before=JSON.parse(state.before.saved),after=JSON.parse(state.after.saved);
+  a.deepEqual(after.uother,before.uother);
+  a.notDeepEqual(after.uexisting,before.uexisting);
+ });
  await check('lost capture also cancels column drag safely',async()=>{
   const state=await page.evaluate(()=>{const table=document.getElementById('existing'),before=JSON.stringify(p.widths['sample.md'].uexisting),handle=table.querySelector('.tcr-handle');handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:10,pointerType:'touch',button:0,clientX:200}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:10,pointerType:'touch',clientX:290}));handle.dispatchEvent(new PointerEvent('lostpointercapture',{pointerId:10}));return {before,after:JSON.stringify(p.widths['sample.md'].uexisting),resizing:!!table.dataset.tcrResizing}});a.equal(state.after,state.before);a.equal(state.resizing,false);
  });
  await check('row resize uses saved merged-grid height and works during range mode',async()=>{
-  const state=await page.evaluate(()=>{const table=document.getElementById('existing');p.setRowHeights('sample.md','uexisting',[null,'90px']);p.reflowTable(table);p._touchRange={table,anchor:null};const handle=table.rows[1].cells[0].querySelector('.tt-row-handle');const before=parseFloat(getComputedStyle(table).gridTemplateRows.split(' ')[1]);handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:20,pointerType:'touch',button:0,clientY:100}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:20,pointerType:'touch',clientY:120}));const after=parseFloat(p.getRowHeights('sample.md','uexisting')[1]);window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:20}));p._touchRange=null;return{before,after,cancelled:p.getRowHeights('sample.md','uexisting')[1],cleanup:!!p._rowCleanup}});a.equal(state.after,state.before+20);a.equal(state.cancelled,'90px');a.equal(state.cleanup,false);
+  const state=await page.evaluate(()=>{const table=document.getElementById('existing');p.setRowHeights('sample.md','uexisting',[null,'90px']);p.reflowTable(table);p._touchRange={table,anchor:null};const handle=table.rows[1].cells[0].querySelector('.tt-row-handle');const measure=()=>parseFloat(getComputedStyle(table).gridTemplateRows.split(' ')[1]);const before=measure();handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:20,pointerType:'touch',button:0,clientY:100}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:20,pointerType:'touch',clientY:120}));const after=measure(),saved=p.getRowHeights('sample.md','uexisting')[1];window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:20}));p._touchRange=null;return{before,after,saved,cancelled:measure(),cleanup:!!p._rowCleanup}});a.equal(state.after,state.before+20);a.equal(state.saved,'90px');a.equal(state.cancelled,state.before);a.equal(state.cleanup,false);
  });
  await check('touch toolbar actions preserve active embedded editor focus',async()=>{
   await page.evaluate(()=>p.refreshMergeToolbar());
@@ -170,7 +325,7 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  });
  await check('rich clipboard denial reports fallback without false success',async()=>{await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{write:async()=>{throw Error('denied')},writeText:async text=>window.copiedPlain=text}}));await action('复制/导出','复制到 Excel');a.match(await page.evaluate(()=>notices.at(-1)),/纯文本/);await action('复制/导出','复制纯文本');a.ok(await page.evaluate(()=>copiedPlain.includes('\t')));});
  await check('dark theme changes semantic cell colors',async()=>{await page.evaluate(()=>{document.body.classList.add('theme-dark');p.selectRect(document.getElementById('existing'),1,0,1,0,'sample.md','uexisting');p.setCellStyle('bg','blue')});a.equal(await cell(1,0).evaluate(c=>getComputedStyle(c).backgroundColor),'rgb(41, 66, 94)');});
- await check('direct merge and split icons execute original source and metadata operations',async()=>{
+ await check('merge menu supports both content choices, with native undo and redo',async()=>{
   await page.evaluate(()=>{
    window.beforeScratchSource=editor.getValue();window.beforeScratchMapping=p.tableSourceInfo;
    const lines=[p.buildRow([p.encodeInvisibleUid('scratch')+'A','B']),p.buildRow(['---','---']),p.buildRow(['甲','乙'])];
@@ -181,7 +336,17 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    p.tableSourceInfo=(ed,t)=>t.id==='scratch'?nativeMapping.call(p,ed,t):beforeScratchMapping(ed,t);
    const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.selectRect(table,1,0,1,1,'sample.md',p.tableId(table));
   });
-  a.equal(await page.getByRole('button',{name:'合并单元格',exact:true}).isEnabled(),true);await page.getByRole('button',{name:'合并单元格',exact:true}).click();
+  const before=await page.evaluate(()=>editor.getValue());
+  const choose=async title=>{await page.getByRole('button',{name:'合并单元格',exact:true}).click();await page.getByRole('button',{name:title,exact:true}).click();};
+  await choose('仅保留左上格内容');
+  a.match(await page.evaluate(()=>editor.getValue()),/\| 甲 \|\s+\|/);
+  a.doesNotMatch(await page.evaluate(()=>editor.getValue()),/乙/);
+  await page.evaluate(()=>TestCM.commands.undo(editor.cm));
+  a.equal(await page.evaluate(()=>editor.getValue()),before);
+  await page.evaluate(()=>TestCM.commands.redo(editor.cm));
+  a.doesNotMatch(await page.evaluate(()=>editor.getValue()),/乙/);
+  await page.evaluate(()=>{TestCM.commands.undo(editor.cm);const table=renderScratch();p.selectRect(table,1,0,1,1,'sample.md',p.tableId(table));});
+  await choose('保留全部内容');
   a.match(await page.evaluate(()=>editor.getValue()),/甲<br>乙/);a.equal(await page.evaluate(()=>p.merges['sample.md'].uscratch.length),1);
   await page.evaluate(()=>{const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.activateCell(table,table.rows[1].cells[0]);});
   a.equal(await page.getByRole('button',{name:'拆分单元格',exact:true}).isEnabled(),true);await page.getByRole('button',{name:'拆分单元格',exact:true}).click();
@@ -208,13 +373,46 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   a.equal((await lines())[5],'  |  | 甲 |  | 乙 |');
   await select(1,0);await action('删除行','确认删除行');
   a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');
-  await select(1,0);await action('删除列','确认删除列');
+  await select(1,0);
+  await page.evaluate(()=>{window.testNativeTableMenu=true;document.body.style.setProperty('--layer-menu','65');});
+  await button('删除列').click();
+  const confirm=page.getByRole('button',{name:'确认删除列',exact:true});
+  const menuLayers=await confirm.evaluate(item=>{
+   const rect=item.getBoundingClientRect();
+   return {
+    clickable:item.contains(document.elementFromPoint(rect.x+rect.width/2,rect.y+rect.height/2)),
+    menu:Number(getComputedStyle(item.closest('.menu')).zIndex),
+    toolbar:Number(getComputedStyle(document.querySelector('.tt-toolbar')).zIndex),
+   };
+  });
+  a.ok(menuLayers.clickable&&menuLayers.menu>menuLayers.toolbar,JSON.stringify(menuLayers));
+  await confirm.click();
+  await page.evaluate(()=>{window.testNativeTableMenu=false;document.body.style.removeProperty('--layer-menu');});
   a.equal((await lines())[4],'  | 甲 |  | 乙 |');
   await select(1,0);await button('撤销').click();
   a.equal((await lines())[4],'  |  | 甲 |  | 乙 |');
   await select(1,0);await button('重做').click();
   a.equal((await lines())[4],'  | 甲 |  | 乙 |');
   a.equal((await lines())[3],'  | :--- | --- | ---: |');
+ });
+ await check('right-click line breaks and plain-text paste preserve list table structure',async()=>{
+  const getLines=()=>page.evaluate(()=>p.stripTableIdentity(editor.getValue()).split('\n'));
+  const open=async()=>{
+   await page.evaluate(()=>{renderScratch();p.clearMergeSelection();});
+   await page.locator('#scratch tbody tr').first().locator('td').first().click({button:'right'});
+  };
+  const before=await getLines();
+  await open();
+  await page.locator('.menu').getByRole('button',{name:'在单元格内换行',exact:true}).click();
+  const withBreak=await getLines();
+  a.equal(withBreak[4],'  | 甲<br> |  | 乙 |');
+  a.deepEqual(withBreak.slice(0,4),before.slice(0,4));
+  a.equal(withBreak.length,before.length);
+  await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{readText:async()=> '新\t次'}}));
+  await open();
+  await page.locator('.menu').getByRole('button',{name:'粘贴',exact:true}).click();
+  await page.waitForFunction(()=>editor.getValue().includes('  | 新 | 次 | 乙 |'));
+  a.equal((await getLines())[3],before[3]);
  });
  await page.evaluate(()=>{document.getElementById('scratch-host').remove();p.tableSourceInfo=beforeScratchMapping;editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:beforeScratchSource}});p.clearMergeSelection();p._toolbarAnchor=null;p.scanEdit();p.activateCell(document.getElementById('existing'),document.getElementById('existing').rows[1].cells[0]);});
  await page.evaluate(()=>{document.querySelector('.workspace-leaf-content').style.width='';document.getElementById('existing').parentElement.scrollTop=0;document.getElementById('existing').parentElement.scrollLeft=0;Object.defineProperty(window,'visualViewport',{configurable:true,value:{width:1000,height:1100,offsetTop:0,offsetLeft:0,addEventListener(){},removeEventListener(){}}});p._ttViewport();});
