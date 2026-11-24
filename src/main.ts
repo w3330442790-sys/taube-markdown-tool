@@ -14,6 +14,7 @@ import type { MenuItem } from 'obsidian';
 import { exportNoteToDocx } from "./wordExporter";
 import { EditorView, Decoration, DecorationSet, ViewPlugin, ViewUpdate, hoverTooltip } from "@codemirror/view";
 import { RangeSetBuilder, SelectionRange, StateEffect } from "@codemirror/state";
+import type { Text as EditorText } from "@codemirror/state";
 import { generateBinaryHash, generateHash } from "./hash";
 import { markPresentation } from './selection-tools';
 import { migrateLegacyData } from './legacy-data';
@@ -2265,6 +2266,7 @@ export default class SideNote extends MindmapPluginBase {
                 comment.endLine >= state.lineStart - lineDriftTolerance
             )
             .sort((a, b) => a.startLine - b.startLine || a.startChar - b.startChar);
+        if (!comments.length) return;
         const sectionText = this.getReadingSectionSourceText(state);
 
         comments.forEach((comment) => {
@@ -2866,8 +2868,7 @@ export default class SideNote extends MindmapPluginBase {
             trimmed.replace(/^\|/, "").replace(/\|$/, "").split("|").every(part => /^:?-{3,}:?$/.test(part.trim()));
     }
 
-    private getMarkdownTableBlocks(docText: string): TableBlock[] {
-        const lines = docText.split("\n");
+    private getMarkdownTableBlocks(lines: string[]): TableBlock[] {
         const blocks: TableBlock[] = [];
         let line = 0;
 
@@ -2929,7 +2930,7 @@ export default class SideNote extends MindmapPluginBase {
         const docText = this.getEditorTextForFile(filePath);
         if (!docText) return null;
 
-        const blocks = this.getMarkdownTableBlocks(docText);
+        const blocks = this.getMarkdownTableBlocks(docText.split("\n"));
         let widgetIndex = -1;
 
         this.app.workspace.iterateAllLeaves((leaf) => {
@@ -3033,19 +3034,26 @@ export default class SideNote extends MindmapPluginBase {
         }
     }
 
+    private readonly renderedTableSources = new WeakMap<EditorText, { lines: string[]; blocks: TableBlock[] }>();
+
     public applyRenderedTableHighlights(view: EditorView) {
         if (!this.commentManager) return;
         const filePath = this.getFilePathForEditorView(view);
         if (!filePath || !this.toolSettings.showHighlights) return;
 
-        const docText = view.state.doc.toString();
-        const blocks = this.getMarkdownTableBlocks(docText);
         const widgets = Array.from(view.dom.querySelectorAll<HTMLElement>(".cm-table-widget"));
+        if (!widgets.length) return;
         widgets.forEach(widget => this.unwrapRenderedTableHighlights(widget));
-        if (blocks.length === 0 || widgets.length === 0) return;
-
-        const comments = this.commentManager.getCommentsForFile(filePath).filter(comment => !comment.isOrphaned);
-        const lines = docText.split("\n");
+        const comments = this.commentManager.getCommentsForFile(filePath).filter(comment => !comment.isOrphaned && comment.selectedText);
+        if (!comments.length) return;
+        const doc = view.state.doc;
+        let source = this.renderedTableSources.get(doc);
+        if (!source) {
+            const lines = doc.toString().split("\n");
+            source = { lines, blocks: this.getMarkdownTableBlocks(lines) };
+            this.renderedTableSources.set(doc, source);
+        }
+        const { lines, blocks } = source;
 
         comments.forEach((comment) => {
             const blockIndex = blocks.findIndex(block => comment.startLine >= block.startLine && comment.startLine <= block.endLine);
@@ -4662,16 +4670,25 @@ export default class SideNote extends MindmapPluginBase {
         const highlightPlugin = ViewPlugin.fromClass(class {
             decorations: DecorationSet;
             view: EditorView;
+            private tableHighlightFrame = 0;
             constructor(view: EditorView) {
                 this.view = view;
                 plugin.editorViews.add(view);
                 this.decorations = this.buildDecorations(view);
-                window.setTimeout(() => plugin.applyRenderedTableHighlights(view), 0);
+                this.scheduleTableHighlights();
                 this.view.dom.addEventListener('click', this.handleClick);
             }
             destroy() { 
+                if (this.tableHighlightFrame) window.cancelAnimationFrame(this.tableHighlightFrame);
                 plugin.editorViews.delete(this.view);
                 this.view.dom.removeEventListener('click', this.handleClick);
+            }
+            private scheduleTableHighlights() {
+                if (this.tableHighlightFrame) return;
+                this.tableHighlightFrame = window.requestAnimationFrame(() => {
+                    this.tableHighlightFrame = 0;
+                    plugin.applyRenderedTableHighlights(this.view);
+                });
             }
             private readonly handleClick = (event: MouseEvent) => {
                 const target = event.target as HTMLElement;
@@ -4687,10 +4704,11 @@ export default class SideNote extends MindmapPluginBase {
             update(update: ViewUpdate) {
                 const movedByDrag = update.transactions.some(transaction => transaction.effects.some(effect => effect.is(blockMoveEffect)));
                 if (update.docChanged && !movedByDrag) plugin.mapCommentPositionsFromView(update);
-                if (update.docChanged || update.viewportChanged || update.transactions.some(tr => tr.effects.some(e => e.is(forceUpdateEffect)))) {
+                const refresh = update.docChanged || update.transactions.some(tr => tr.effects.some(e => e.is(forceUpdateEffect)));
+                if (refresh) {
                     this.decorations = this.buildDecorations(update.view);
-                    window.setTimeout(() => plugin.applyRenderedTableHighlights(update.view), 0);
                 }
+                if (refresh || update.viewportChanged) this.scheduleTableHighlights();
             }
             buildDecorations(view: EditorView): DecorationSet {
                 const builder = new RangeSetBuilder<Decoration>();
@@ -4700,6 +4718,7 @@ export default class SideNote extends MindmapPluginBase {
                 if (!filePath) return builder.finish();
 
                 const comments = plugin.commentManager.getCommentsForFile(filePath);
+                if (!comments.length) return builder.finish();
                 const doc = view.state.doc;
                 const decorationsArray: Array<{from: number, to: number, decoration: Decoration}> = [];
                 const tableCellContext = plugin.getTableCellContextForEditorView(view, filePath);

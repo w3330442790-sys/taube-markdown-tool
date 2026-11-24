@@ -40,24 +40,11 @@ module.exports = class TableColumnResize extends Plugin {
       this.scanEdit();
     }));
     this.registerEvent(this.app.workspace.on('active-leaf-change', () => {
-      setTimeout(() => { this.processActive(); this.scanEdit(); this.reflow(); }, 80);
+      setTimeout(() => { this.processActive(); this.scanEdit(); }, 80);
     }));
 
-    // Both modes render tables as real <table> nodes we must keep in sync.
-    // Observe the whole document: when the editor (Live Preview, .cm-content)
-    // OR the reading view (.markdown-preview-view) appears or mutates — e.g. on
-    // a mode toggle within the same note — re-enhance so widths are applied
-    // immediately. (Toggling edit/reading does NOT fire file-open / leaf-change,
-    // which is why this observer is required for the "switch and it refreshes"
-    // behavior.)
-    this._mo = new MutationObserver((records) => {
-      if (this._editRaf || !this.tableMutationsNeedScan(records)) return;
-      this._editRaf = requestAnimationFrame(() => {
-        this._editRaf = 0;
-        this.scanEdit();
-        this.processActive();
-      });
-    });
+    this._dirtyTables = new Set();
+    this._mo = new MutationObserver(records => this.queueTableMutations(records));
     this._mo.observe(document.body, { childList: true, subtree: true });
 
     this.addCommand({
@@ -137,6 +124,8 @@ module.exports = class TableColumnResize extends Plugin {
       delete t._tcrAxisRails;
     });
     if (this._mo) this._mo.disconnect();
+    if (this._editRaf) cancelAnimationFrame(this._editRaf);
+    this._dirtyTables?.clear();
     if (this._resizeRaf) cancelAnimationFrame(this._resizeRaf);
     if (this._docPointer) document.removeEventListener('pointerdown', this._docPointer, true);
     if (this._onKey) document.removeEventListener('keydown', this._onKey, true);
@@ -181,23 +170,45 @@ module.exports = class TableColumnResize extends Plugin {
       .forEach((table) => this.enhance(table, { sourcePath: this.tableNotePath(table) }, false));
   }
 
-  tableMutationsNeedScan(records) {
-    // Cursor blinks, toolbar icons and our own selection/resize controls must
-    // not cause a full pass over every table in the workspace. Keep observing
-    // actual cell edits and table mounts/removals, including hidden panes.
-    const controls='.tcr-handle,.tcr-row-handle,.tcr-axis-rail,.tcr-selection-rect,.tcr-merge-toolbar,.tcr-sel-edge,.cm-cursorLayer,.cm-selectionLayer';
-    return records.some(record=>{
+  queueTableMutations(records) {
+    // Scrolling can mount new widgets while other tables stay in the DOM.
+    // Batch actual table changes without rebuilding those unaffected tables.
+    const controls='.tcr-handle,.tcr-row-handle,.tt-row-handle,.tt-open,.tcr-axis-rail,.tcr-selection-rect,.tcr-merge-toolbar,.tcr-sel-edge,.cm-cursorLayer,.cm-selectionLayer,[data-tcr-colgroup]';
+    for(const record of records){
       const target=record.target.nodeType===1?record.target:record.target.parentElement;
-      if(target?.closest(controls + ', :is(th,td) .cm-editor'))return false;
-      const nodes=[...record.addedNodes,...record.removedNodes].filter(node=>
-        !(node.nodeType===1 && node.matches(controls)));
-      if(!nodes.length)return false;
-      if(target?.closest('table'))return true;
-      return nodes.some(node=>node.nodeType===1 && (node.matches('table') || node.querySelector('table')));
+      if(target?.closest(controls + ', :is(th,td) .cm-editor'))continue;
+      const table=target?.closest('table');
+      if(table && [...record.addedNodes,...record.removedNodes].some(node=>node.nodeType!==1 || !node.matches(controls))){
+        this._dirtyTables.add(table);
+      }
+      if(table && target===table && Array.from(record.removedNodes).some(node=>node.nodeName==='COLGROUP')){
+        this._dirtyTables.add(table);
+      }
+      for(const node of record.addedNodes){
+        if(node.nodeType!==1 || node.matches(controls))continue;
+        if(node.matches('table'))this._dirtyTables.add(node);
+        else node.querySelectorAll('table').forEach(added=>this._dirtyTables.add(added));
+      }
+      for(const node of record.removedNodes){
+        if(node.nodeType===1 && (node.matches('table') || node.querySelector('table')))this._hasDetachedTables=true;
+      }
+    }
+    if(this._editRaf || (!this._dirtyTables.size && !this._hasDetachedTables))return;
+    this._editRaf=requestAnimationFrame(()=>{
+      this._editRaf=0;
+      if(this._hasDetachedTables){this._hasDetachedTables=false;this.cleanupDetachedTables();}
+      const tables=[...this._dirtyTables];this._dirtyTables.clear();
+      for(const table of tables){
+        if(!table.isConnected)continue;
+        const edit=!!table.closest('.cm-content');
+        if(edit || table.closest('.markdown-preview-view')){
+          this.enhance(table,{sourcePath:this.tableNotePath(table)},edit);
+        }
+      }
     });
   }
 
-  scanEdit() {
+  cleanupDetachedTables() {
     if (this._layoutStyles) for (const [table,style] of this._layoutStyles) if (!table.isConnected) {
       style.remove();this._layoutStyles.delete(table);
     }
@@ -211,6 +222,10 @@ module.exports = class TableColumnResize extends Plugin {
       if (rail._tcrTable.isConnected) return true;
       this.removeAxisRail(rail); return false;
     });
+  }
+
+  scanEdit() {
+    this.cleanupDetachedTables();
     document
       .querySelectorAll('.cm-content table')
       .forEach((table) => this.enhance(table, { sourcePath: this.tableNotePath(table) }, true));
@@ -234,7 +249,7 @@ module.exports = class TableColumnResize extends Plugin {
       // Keep the rendered name while the raw Markdown editor is open.
       const content = c.querySelector?.(':scope > .table-cell-wrapper:not(:has(.cm-editor)), .table-cell-content') ||
         c.querySelector?.('.table-cell-wrapper .cm-content') || c;
-      key += (content.textContent || '').trim() + '\u0001';
+      key += this.stripTableIdentity(content.textContent || '').trim() + '\u0001';
     }
     let h = 5381;
     for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) | 0;
@@ -262,11 +277,10 @@ module.exports = class TableColumnResize extends Plugin {
 
   tableUid(table) {
     if (!table) return null;
-    const oldMarker = table.querySelector && table.querySelector('[data-table-tune-id]');
-    let uid = oldMarker && oldMarker.getAttribute('data-table-tune-id');
+    const firstHeader = table.querySelector?.('thead th, thead td');
+    let uid = firstHeader && this.decodeInvisibleUid(firstHeader.textContent || '');
     if (!uid && table.querySelector) {
-      const firstHeader = table.querySelector('thead th, thead td');
-      uid = firstHeader && this.decodeInvisibleUid(firstHeader.textContent || '');
+      uid = table.querySelector('[data-table-tune-id]')?.getAttribute('data-table-tune-id');
     }
     if (!uid) {
       const editor = this.app?.workspace && this.tableNotePath(table) === this.currentPath() ? this.activeEditor() : null;
@@ -459,8 +473,13 @@ module.exports = class TableColumnResize extends Plugin {
           for(const tr of update.transactions)for(const e of tr.effects)if(e.is(effect)){
             this.applyTableHistory(e.value);
             if(tr.isUserEvent('undo') || tr.isUserEvent('redo'))this.clearMergeSelection();
+            const keys=new Set(e.value.entries.map(entry=>entry.key));
+            if(!keys.size)continue;
             requestAnimationFrame(()=>{
-              document.querySelectorAll('table[data-tcr]').forEach(t=>{if(t.dataset.tcrPath===e.value.path && t.isConnected)this.reflowTable(t)});
+              document.querySelectorAll('table[data-tcr]').forEach(t=>{
+                if(t.dataset.tcrPath===e.value.path && t.isConnected &&
+                   (keys.has(t._tcrFixedTid) || keys.has('u'+t.dataset.tableTuneUid) || keys.has(this.tableId(t))))this.reflowTable(t);
+              });
             });
           }
         }),
@@ -526,6 +545,7 @@ module.exports = class TableColumnResize extends Plugin {
       this.clearMergeSelection();
       new Notice('TableTune: 操作未能安全写入，已取消');
       console.error('TableTune transaction failed',error);
+      return undefined;
     }
     return result;
   }
@@ -561,7 +581,7 @@ module.exports = class TableColumnResize extends Plugin {
   // Apply stored row heights (Reading mirrors Edit; re-renders keep them).
   applyRowHeights(table, path, tid) {
     const rows = table.querySelectorAll('tr');
-    const rowSaved = this.getRowHeights(path, tid);
+    const rowSaved = table._tcrRowHeights || this.getRowHeights(path, tid);
     if (!rowSaved) return;
     rows.forEach((tr, i) => {
       const h = rowSaved[i];
@@ -646,6 +666,7 @@ module.exports = class TableColumnResize extends Plugin {
     let colgroup = table.querySelector('colgroup');
     if (!colgroup) {
       colgroup = document.createElement('colgroup');
+      colgroup.dataset.tcrColgroup = '1';
       table.prepend(colgroup);
     }
     while (colgroup.children.length < n) colgroup.appendChild(document.createElement('col'));
@@ -711,7 +732,7 @@ module.exports = class TableColumnResize extends Plugin {
     let anchor=null;
     try {
       const editor=this.activeEditor();
-      const info=editor && this.currentPath()===path && this.tableSourceInfo(editor,table);
+      const info=!preview && editor && this.currentPath()===path && this.tableSourceInfo(editor,table);
       if(info && editor.cm){
         if(!this._widthAnchors)this._widthAnchors=new WeakMap();
         let entries=this._widthAnchors.get(editor.cm);
@@ -724,8 +745,9 @@ module.exports = class TableColumnResize extends Plugin {
     const fixed=anchor?.widths || table._tcrFixedWidths;
     const previousTid=anchor?.tid || table._tcrFixedTid;
     const stored=this.getWidths(path,tid,n);
-    const saved = (!tid.startsWith('u') && previousTid && previousTid!==tid && fixed?.length===n)
-      ? fixed : stored || (fixed?.length===n ? fixed : null);
+    const legacyRename = !tid.startsWith('u') && previousTid && !previousTid.startsWith('u') && previousTid!==tid;
+    const saved = (legacyRename && fixed?.length===n)
+      ? fixed : stored || (fixed?.length===n && (!previousTid || previousTid===tid) ? fixed : null);
     let shouldPersist = false;
     let effective = saved;
     if (saved && saved.length !== n) {
@@ -996,6 +1018,7 @@ module.exports = class TableColumnResize extends Plugin {
 
   effectiveMerges(table, path, tid) {
     const list = (this.merges[path] && this.merges[path][tid]) || [];
+    if (!list.length) return [];
     const valid = this.validMergeRegions(table, list);
     const stable = !!this.tableUid(table);
     if (stable) return valid;
@@ -1052,7 +1075,7 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   updateMergeGridRows(table, path, tid) {
-    const heights = this.getRowHeights(path, tid) || [];
+    const heights = table._tcrRowHeights || this.getRowHeights(path, tid) || [];
     table.style.gridTemplateRows = Array.from(table.rows, (_, r) =>
       'minmax(' + Math.max(24, parseFloat(heights[r]) || 30) + 'px, auto)').join(' ');
     table._tcrGridRows = table.style.gridTemplateRows;
@@ -1321,15 +1344,7 @@ module.exports = class TableColumnResize extends Plugin {
       .map(row => indent + this.buildRow(row))
       .join('\n');
   }
-  tableSourceInfo(editor, table) {
-    const doc = editor.getDoc();
-    const cm = editor.cm;
-    const cmDoc = cm && cm.state && cm.state.doc;
-    const useCM = cmDoc && Number.isInteger(cmDoc.lines) && typeof cmDoc.line === 'function';
-    const lineCount = useCM ? cmDoc.lines : typeof doc.lineCount === 'function' ? doc.lineCount() :
-      Array.isArray(doc.lines) ? doc.lines.length : Number.isInteger(doc.lines) ? doc.lines : 0;
-    const getLine = i => useCM ? cmDoc.line(i+1).text : typeof doc.getLine === 'function' ? doc.getLine(i) :
-      typeof doc.line === 'function' ? doc.line(i+1).text : doc.lines[i];
+  buildTableSourceIndex(getLine, lineCount) {
     const starts = new Array(lineCount);
     let acc = 0;
     for (let i = 0; i < lineCount; i++) { starts[i] = acc; acc += (getLine(i) || '').length + 1; }
@@ -1359,10 +1374,34 @@ module.exports = class TableColumnResize extends Plugin {
       }
       blocks.push({
         grid, sep, startLine: i, endLine,
-        uid: marker ? marker[1] : this.uidFromGrid(grid), markerLine,
+        uid: this.uidFromGrid(grid) || marker?.[1], markerLine,
       });
       i = endLine;
     }
+    return { starts, blocks };
+  }
+
+  tableSourceInfo(editor, table) {
+    const doc = editor.getDoc();
+    const cm = editor.cm;
+    const cmDoc = cm?.state?.doc;
+    const useCM = cmDoc && Number.isInteger(cmDoc.lines) && typeof cmDoc.line === 'function';
+    const lineCount = useCM ? cmDoc.lines : typeof doc.lineCount === 'function' ? doc.lineCount() :
+      Array.isArray(doc.lines) ? doc.lines.length : Number.isInteger(doc.lines) ? doc.lines : 0;
+    const getLine = i => useCM ? cmDoc.line(i+1).text : typeof doc.getLine === 'function' ? doc.getLine(i) :
+      typeof doc.line === 'function' ? doc.line(i+1).text : doc.lines[i];
+    // CodeMirror Text is immutable. Viewport updates retain the same instance.
+    // The fallback editor may mutate its document in place, so index it afresh.
+    let index;
+    if (useCM) {
+      this._tableSourceIndexes ||= new WeakMap();
+      index = this._tableSourceIndexes.get(cmDoc);
+      if (!index) {
+        index = this.buildTableSourceIndex(getLine,lineCount);
+        this._tableSourceIndexes.set(cmDoc,index);
+      }
+    } else index = this.buildTableSourceIndex(getLine,lineCount);
+    const { starts, blocks } = index;
     if (!blocks.length) return null;
 
     // Prefer CodeMirror's source position when available, but use a cell rather
@@ -1392,10 +1431,11 @@ module.exports = class TableColumnResize extends Plugin {
         if (mapped && sameShapeAndHeader(mapped)) block = mapped;
       }
     } catch (e) { /* Keep an identity match when DOM mapping is unavailable. */ }
-    const domTables = this.tablePeers(table);
-    const ordinal = domTables.indexOf(table);
-    if (!block && !uid && domTables.length === blocks.length && ordinal >= 0 && ordinal < blocks.length &&
-      sameShapeAndHeader(blocks[ordinal])) block = blocks[ordinal];
+    if (!block && !uid) {
+      const domTables = this.tablePeers(table);
+      const ordinal = domTables.indexOf(table);
+      if (domTables.length === blocks.length && ordinal >= 0 && sameShapeAndHeader(blocks[ordinal])) block = blocks[ordinal];
+    }
     // Cached DOM identity is only a last resort: CodeMirror may reuse a node
     // previously belonging to a different table during a document rerender.
     if (!block && uidMatches.length === 1 && sameShapeAndHeader(uidMatches[0])) block = uidMatches[0];
@@ -1419,6 +1459,7 @@ module.exports = class TableColumnResize extends Plugin {
       startLine,
       endLine,
       uid: blockUid,
+      sharedUid: !!blockUid && blocks.some(other => other !== block && other.uid === blockUid),
       markerLine,
       from,
       to,
@@ -2999,8 +3040,8 @@ module.exports = class TableColumnResize extends Plugin {
     // identity/DOM captured when the handle was first attached.
     const table = cell?.closest('table') || colgroup.closest('table');
     if (!table || table.isConnected === false) return;
+    this._columnDragCleanup?.();
     key = table.dataset.tcrPath || key;
-    tid = this.tableId(table);
     colgroup = this.ensureColgroup(table, table.querySelectorAll('thead th, thead td').length || colgroup.children.length);
     if (cell) i = this.cellCol(cell);
     if (cell && cell.dataset.tcrMerge) i = this.cellCol(cell) + cell.colSpan - 1;
@@ -3014,11 +3055,8 @@ module.exports = class TableColumnResize extends Plugin {
     const startX = e.clientX;
     const startW = col.getBoundingClientRect().width || parseFloat(col.style.width) || 80;
     const initialWidths=Array.from(colgroup.children,c=>c.style.width || '');
-    const updateStore = () => {
-      const arr = [];
-      for (const c of colgroup.children) arr.push(c.style.width || '');
-      table._tcrColumnDrag = arr;
-      this.setWidths(key, this.tableId(table), arr);
+    const trackDrag = () => {
+      table._tcrColumnDrag = Array.from(colgroup.children,c=>c.style.width || '');
     };
     const onMove = (ev) => {
       if(ev.pointerId!=null && e.pointerId!=null && ev.pointerId!==e.pointerId)return;
@@ -3036,21 +3074,24 @@ module.exports = class TableColumnResize extends Plugin {
       const w = Math.max(40, startW + (ev.clientX - startX));
       col.style.width = w + 'px';
       this.syncTableWidth(table, colgroup);
-      // Keep the in-memory store current on every move so Reading view (and any
-      // Live Preview re-render) always reflects the latest width immediately.
-      updateStore();
+      trackDrag();
     };
     const onUp = (ev) => {
       if(ev?.pointerId!=null && e.pointerId!=null && ev.pointerId!==e.pointerId)return;
       window.removeEventListener('pointermove', onMove, true);
       window.removeEventListener('pointerup', onUp, true);
       window.removeEventListener('pointercancel', onUp, true);
-      updateStore();
+      trackDrag();
       const widths = table._tcrColumnDrag.slice();
       delete table._tcrColumnDrag;
       if(widths.every((width,index)=>width===initialWidths[index])){cleanup();return;}
-      this.runTableHistory(()=>this.commitColumnWidths(table, key, widths),history);
-      this.persist();
+      const saved=this.runTableHistory(()=>this.commitColumnWidths(table, key, widths),history);
+      if(saved)this.persist();
+      else {
+        onCancel();
+        new Notice('无法定位当前表格，列宽调整已取消');
+        return;
+      }
       cleanup();
     };
     const cleanup=()=>{
@@ -3063,13 +3104,13 @@ module.exports = class TableColumnResize extends Plugin {
     };
     const onCancel=()=>{
       initialWidths.forEach((width,index)=>{if(colgroup.children[index])colgroup.children[index].style.width=width;});
-      this.setWidths(key,tid,initialWidths.slice());this.syncTableWidth(table,colgroup);cleanup();
+      this.syncTableWidth(table,colgroup);cleanup();
     };
     this._columnDragCleanup=onCancel;
     // A release over an insertion rail must not become a native button click.
     const swallowClick=event=>{event.preventDefault();event.stopImmediatePropagation();};
     handle?.addEventListener('click',swallowClick,{once:true,capture:true});
-    updateStore();
+    trackDrag();
     window.addEventListener('pointermove', onMove, true);
     window.addEventListener('pointerup', onUp, true);
     window.addEventListener('pointercancel', onCancel, true);
@@ -3078,22 +3119,30 @@ module.exports = class TableColumnResize extends Plugin {
 
   commitColumnWidths(table, path, widths) {
     const oldTid = this.tableId(table);
-    this.setWidths(path, oldTid, widths);
     // Give a resized table a source-backed identity so later header edits,
     // view switches and reopening the note cannot discard its saved widths.
     const editor = this.app?.workspace && this.activeEditor();
-    if (!editor || this.currentPath() !== path || table.isConnected === false) return oldTid;
+    if (!editor || this.currentPath() !== path || table.isConnected === false) return null;
     const info = this.tableSourceInfo(editor, table);
     if (!info || typeof info.header !== 'string') return null;
-    if(info.uid)return 'u'+info.uid;
+    if(info.uid&&!info.sharedUid){
+      const tid='u'+info.uid;
+      this.setWidths(path,tid,widths);
+      return tid;
+    }
     const uid = 'm'+Date.now().toString(36)+Math.random().toString(36).slice(2,8);
-    const at = info.toPos(info.from + info.header.match(/^\s*\|?\s*/)[0].length);
-    try { this.replaceTableRange(editor,this.encodeInvisibleUid(uid), at, at); }
+    const headerFrom=info.rowSources?.[0]?.from ?? info.from;
+    const previousMarker=info.sharedUid ? this.encodeInvisibleUid(info.uid) : '';
+    const previousAt=previousMarker ? info.header.indexOf(previousMarker) : -1;
+    const from=headerFrom+(previousAt>=0 ? previousAt : info.header.match(/^\s*\|?\s*/)[0].length);
+    const to=from+(previousAt>=0 ? previousMarker.length : 0);
+    try { this.replaceTableRange(editor,this.encodeInvisibleUid(uid), info.toPos(from), info.toPos(to)); }
     catch (_) { return null; }
     const tid = 'u'+uid;
-    for (const store of [this.widths,this.rowHeights,this.merges,this.tableDims,this.alignments,this.cellStyles,this.tableOptions]) {
+    for (const store of [this.rowHeights,this.merges,this.tableDims,this.alignments,this.cellStyles,this.tableOptions]) {
       if (store?.[path]?.[oldTid] !== undefined) store[path][tid] = store[path][oldTid];
     }
+    this.setWidths(path,tid,widths);
     table.dataset.tableTuneUid = uid;
     if (this._sel?.table === table) this._sel.tid = tid;
     return tid;

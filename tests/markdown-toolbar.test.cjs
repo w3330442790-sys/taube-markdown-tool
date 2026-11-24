@@ -47,7 +47,7 @@ function loadCloze() {
     if (id === 'obsidian') return {};
     if (id === '@codemirror/view') return {
       Decoration: { mark: () => ({ range: () => ({}) }), set: () => ({}) },
-      ViewPlugin: { fromClass: () => ({}) },
+      ViewPlugin: { fromClass: plugin => plugin },
     };
     return require(id);
   };
@@ -56,6 +56,15 @@ function loadCloze() {
 }
 
 const cloze = loadCloze();
+test('scrolling a long note reuses cloze decorations until the document changes', () => {
+  let scans = 0;
+  const view = { state: { doc: { toString() { scans++; return '==复习==\n'.repeat(20661); } } } };
+  const extension = new (cloze.createClozeExtension())(view);
+  extension.update({ view, viewportChanged: true, docChanged: false });
+  assert.equal(scans, 1);
+  extension.update({ view, viewportChanged: false, docChanged: true });
+  assert.equal(scans, 2);
+});
 const plan = (text, from, to, command) => toolbar.planMarkdownCommand(text, from, to, command);
 
 /** Apply a plan with the same rules CodeMirror uses and validate its invariants. */

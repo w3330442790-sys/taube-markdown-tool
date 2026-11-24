@@ -87,6 +87,23 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  await check('enabling plugin enhances already open tables without reopening note',async()=>{
   a.equal(await page.locator('#tables .tt-open').count(),2);
  });
+ await check('a newly visible table does not reflow other mounted tables',async()=>{
+  const touched=await page.evaluate(async()=>{
+   const original=p.reflowTable;
+   const reflowed=[];
+   p.reflowTable=function(table){reflowed.push(table.id);return original.call(this,table);};
+   const table=document.getElementById('other').cloneNode(true);
+   table.id='newly-visible';delete table.dataset.tcr;
+   const host=document.createElement('div');host.className='table-wrapper';host.appendChild(table);
+   document.getElementById('tables').appendChild(host);
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   const mounted=table.dataset.tcr;
+   p.reflowTable=original;host.remove();
+   return {mounted,reflowed};
+  });
+  a.equal(touched.mounted,'1');
+  a.ok(!touched.reflowed.includes('existing')&&!touched.reflowed.includes('other'),JSON.stringify(touched));
+ });
  await check('ordinary text tap keeps tools closed; edge tap opens icon popup above the point',async()=>{
   await cell(1,0).tap();a.equal(await page.locator('.tt-toolbar:visible').count(),0);
   await edge(cell(1,0));const b=await page.locator('.tt-toolbar').boundingBox(),c=await cell(1,0).boundingBox();
@@ -180,11 +197,30 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  await check('cancelled column resize restores widths without persisting partial drag',async()=>{
   const state=await page.evaluate(()=>{const table=document.getElementById('existing'),before=JSON.stringify(p.widths['sample.md'].uexisting),handle=table.querySelector('.tcr-handle');handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:9,pointerType:'touch',button:0,clientX:200,clientY:200}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:9,pointerType:'touch',clientX:300,clientY:200}));window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:9,pointerType:'touch'}));return {before,after:JSON.stringify(p.widths['sample.md'].uexisting),resizing:!!table.dataset.tcrResizing}});a.equal(state.after,state.before);a.equal(state.resizing,false);
  });
+ await check('dragging a column leaves the other table width and saved entry untouched',async()=>{
+  const state=await page.evaluate(()=>{
+   const table=document.getElementById('existing'),other=document.getElementById('other');
+   const snapshot=()=>({target:p.currentWidths(table),other:p.currentWidths(other),saved:JSON.stringify(p.widths['sample.md'])});
+   const before=snapshot(),handle=table.querySelector('.tcr-handle');
+   const pointer=(target,type,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,pointerId:23,pointerType:'touch',button:0,clientX:x}));
+   pointer(handle,'pointerdown',200);pointer(window,'pointermove',240);
+   const during=snapshot();pointer(window,'pointerup',240);
+   const after=snapshot();TestCM.commands.undo(editor.cm);
+   return {before,during,after};
+  });
+  a.notDeepEqual(state.before.target,state.during.target);
+  a.equal(state.during.saved,state.before.saved);
+  a.deepEqual(state.during.other,state.before.other);
+  a.deepEqual(state.after.other,state.before.other);
+  const before=JSON.parse(state.before.saved),after=JSON.parse(state.after.saved);
+  a.deepEqual(after.uother,before.uother);
+  a.notDeepEqual(after.uexisting,before.uexisting);
+ });
  await check('lost capture also cancels column drag safely',async()=>{
   const state=await page.evaluate(()=>{const table=document.getElementById('existing'),before=JSON.stringify(p.widths['sample.md'].uexisting),handle=table.querySelector('.tcr-handle');handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:10,pointerType:'touch',button:0,clientX:200}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:10,pointerType:'touch',clientX:290}));handle.dispatchEvent(new PointerEvent('lostpointercapture',{pointerId:10}));return {before,after:JSON.stringify(p.widths['sample.md'].uexisting),resizing:!!table.dataset.tcrResizing}});a.equal(state.after,state.before);a.equal(state.resizing,false);
  });
  await check('row resize uses saved merged-grid height and works during range mode',async()=>{
-  const state=await page.evaluate(()=>{const table=document.getElementById('existing');p.setRowHeights('sample.md','uexisting',[null,'90px']);p.reflowTable(table);p._touchRange={table,anchor:null};const handle=table.rows[1].cells[0].querySelector('.tt-row-handle');const before=parseFloat(getComputedStyle(table).gridTemplateRows.split(' ')[1]);handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:20,pointerType:'touch',button:0,clientY:100}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:20,pointerType:'touch',clientY:120}));const after=parseFloat(p.getRowHeights('sample.md','uexisting')[1]);window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:20}));p._touchRange=null;return{before,after,cancelled:p.getRowHeights('sample.md','uexisting')[1],cleanup:!!p._rowCleanup}});a.equal(state.after,state.before+20);a.equal(state.cancelled,'90px');a.equal(state.cleanup,false);
+  const state=await page.evaluate(()=>{const table=document.getElementById('existing');p.setRowHeights('sample.md','uexisting',[null,'90px']);p.reflowTable(table);p._touchRange={table,anchor:null};const handle=table.rows[1].cells[0].querySelector('.tt-row-handle');const measure=()=>parseFloat(getComputedStyle(table).gridTemplateRows.split(' ')[1]);const before=measure();handle.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,pointerId:20,pointerType:'touch',button:0,clientY:100}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,pointerId:20,pointerType:'touch',clientY:120}));const after=measure(),saved=p.getRowHeights('sample.md','uexisting')[1];window.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:20}));p._touchRange=null;return{before,after,saved,cancelled:measure(),cleanup:!!p._rowCleanup}});a.equal(state.after,state.before+20);a.equal(state.saved,'90px');a.equal(state.cancelled,state.before);a.equal(state.cleanup,false);
  });
  await check('touch toolbar actions preserve active embedded editor focus',async()=>{
   await page.evaluate(()=>p.refreshMergeToolbar());

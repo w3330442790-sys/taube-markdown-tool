@@ -24,17 +24,25 @@ module.exports=class TabletTableTools extends Base{
    const cell=this.cellAtCursor();const table=cell?.closest?.('table');
    if(table)this.activateCell(table,cell);else if(this.targetSelection())this.refreshMergeToolbar();else new Notice('请先点击一个表格单元格');
   }});
-  const viewport=()=>{this.positionMergeToolbar(this.targetSelection());this.updateScrollHeights();};
-  document.addEventListener('scroll',viewport,true);
-  window.visualViewport?.addEventListener('resize',viewport);window.visualViewport?.addEventListener('scroll',viewport);
-  this._ttViewport=viewport;
+  this._ttViewport=()=>{
+   if(this._ttViewportFrame||!this._toolbar||this._toolbar.style.display==='none')return;
+   this._ttViewportFrame=requestAnimationFrame(()=>{
+    this._ttViewportFrame=0;
+    if(this._toolbar&&this._toolbar.style.display!=='none')this.positionMergeToolbar(this.targetSelection());
+   });
+  };
+  this._ttResize=()=>{this.updateScrollHeights();this._ttViewport();};
+  document.removeEventListener('scroll',this._toolbarViewport,true);
+  document.addEventListener('scroll',this._ttViewport,true);
+  window.visualViewport?.addEventListener('resize',this._ttResize);
+  window.visualViewport?.addEventListener('scroll',this._ttViewport);
   this._ttOutside=e=>{const table=(this._touchRange||this._sel||this._activeCell)?.table;if(table&&!table.contains(e.target)&&!e.target.closest?.('.tcr-merge-toolbar,.menu,.tt-open,.tcr-axis-rail'))this.closeTableTools();};
   document.addEventListener('pointerdown',this._ttOutside,true);
   this.registerEvent(this.app.workspace.on('active-leaf-change',()=>{
    const table=(this._touchRange||this._sel||this._activeCell)?.table;
    if(table&&this.tableNotePath(table)!==this.currentPath())this.closeTableTools();
   }));
-  this.app.workspace.onLayoutReady(()=>{if(this._ttLoaded){this.processActive();this.scanEdit();this.reflow();}});
+  this.app.workspace.onLayoutReady(()=>{if(this._ttLoaded){this.processActive();this.scanEdit();}});
  }
  persist(){
   const data={...this._savedData,widths:this.widths,rowHeights:this.rowHeights,merges:this.merges,tableDims:this.tableDims,alignments:this.alignments||{},cellStyles:this.cellStyles||{},tableOptions:this.tableOptions||{}};
@@ -119,7 +127,7 @@ module.exports=class TabletTableTools extends Base{
   }
   this._ttToolsOpen=true;return super.selectTableAxis(table,handle,event,context);
  }
- enhance(table,ctx,allowDrag){super.enhance(table,ctx,allowDrag);if(table.dataset.tcr)this.applyExtras(table);}
+ enhance(table,ctx,allowDrag){const enhanced=table.dataset.tcr;super.enhance(table,ctx,allowDrag);if(!enhanced&&table.dataset.tcr)this.applyExtras(table);}
  reflowTable(table){super.reflowTable(table);if(table.dataset.tcr)this.applyExtras(table);}
  applyCellAlignments(table,path,tid){super.applyCellAlignments(table,path,tid);this.paintStyles(table,path,tid);}
  paintStyles(table,path,tid){
@@ -131,7 +139,7 @@ module.exports=class TabletTableTools extends Base{
   }));
  }
  applyRowHeights(table,path,tid){
-  const saved=this.getRowHeights(path,tid)||[];
+  const saved=table._tcrRowHeights||this.getRowHeights(path,tid)||[];
   Array.from(table.rows).forEach((row,r)=>{if(parseFloat(saved[r])>0)row.dataset.ttRowHeight='true';else if(row.dataset.ttRowHeight){row.style.height='';delete row.dataset.ttRowHeight;}});
   super.applyRowHeights(table,path,tid);
  }
@@ -173,11 +181,15 @@ module.exports=class TabletTableTools extends Base{
   const scroll=()=>{if(this._sel?.table===table)this.positionSelectionOverlay();};host.addEventListener('scroll',scroll,{passive:true});
   let observer;
   if(typeof ResizeObserver!=='undefined'){let pending=0;observer=new ResizeObserver(()=>{
-   if(pending)return;pending=requestAnimationFrame(()=>{pending=0;if(!table.isConnected)return;this.setScrollHeight(host);this.positionMergeToolbar(this.targetSelection());if(this._sel?.table===table)this.positionSelectionOverlay();});
+   if(pending)return;pending=requestAnimationFrame(()=>{pending=0;if(!table.isConnected)return;if(host.classList.contains('tt-scroll-vertical'))this.setScrollHeight(host);if(this._sel?.table===table)this.positionSelectionOverlay();this._ttViewport();});
   });observer.observe(host);}
   this._ttCleanups?.set(table,()=>{open.remove();table.removeEventListener('click',activate);host.removeEventListener('scroll',scroll);observer?.disconnect();host.classList.remove('tt-scroll','tt-scroll-vertical');host.style.removeProperty('--tt-scroll-height');});
  }
- scanEdit(){super.scanEdit();if(this._ttCleanups)for(const [table,cleanup]of this._ttCleanups)if(!table.isConnected){cleanup();this._ttCleanups.delete(table);}}
+ cleanupDetachedTables(){
+  super.cleanupDetachedTables();
+  if(this._touchRange && !this._touchRange.table.isConnected)this.closeTableTools();
+  if(this._ttCleanups)for(const [table,cleanup]of this._ttCleanups)if(!table.isConnected){cleanup();this._ttCleanups.delete(table);}
+ }
  setScrollHeight(host){
   const viewport=window.visualViewport,height=viewport?.height||window.innerHeight;
   const pane=host.closest('.workspace-leaf-content,.markdown-source-view,.markdown-preview-view'),paneHeight=pane?.getBoundingClientRect().height||height;
@@ -200,10 +212,22 @@ module.exports=class TabletTableTools extends Base{
   const tracks=table.classList.contains('tcr-grid-table')?getComputedStyle(table).gridTemplateRows.split(' ').map(parseFloat):[];
   const height=tracks[r]||parseFloat(before[r])||table.rows[r].getBoundingClientRect().height||32;
   let final=height;const y=e.clientY,id=e.pointerId,handle=e.currentTarget;try{handle.setPointerCapture(id)}catch(_){}
-  const move=ev=>{if(ev.pointerId!==id)return;ev.preventDefault();final=Math.max(24,Math.round(height+ev.clientY-y));const next=before.slice();next[r]=final+'px';this.setRowHeights(path,tid,next);this.applyRowHeights(table,path,tid);this.applyMerges(table,path,tid);};
-  const cleanup=()=>{window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',cancel,true);handle.removeEventListener('lostpointercapture',cancel);try{handle.releasePointerCapture(id)}catch(_){}this._rowCleanup=null;};
-  const cancel=()=>{cleanup();this.setRowHeights(path,tid,before);this.reflowTable(table);};
-  const up=ev=>{if(ev.pointerId!==id)return;cleanup();this.setRowHeights(path,tid,before);this.runTableHistory(()=>{const next=before.slice();next[r]=final+'px';const finalTid=this.commitColumnWidths(table,path,this.currentWidths(table));if(!finalTid)return;this.setRowHeights(path,finalTid,next);this.persist();},snapshot);this.reflowTable(table);};
+  const move=ev=>{if(ev.pointerId!==id||!table.isConnected)return;ev.preventDefault();final=Math.max(24,Math.round(height+ev.clientY-y));const next=before.slice();next[r]=final+'px';table._tcrRowHeights=next;this.applyRowHeights(table,path,tid);};
+  const cleanup=()=>{window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',cancel,true);handle.removeEventListener('lostpointercapture',cancel);delete table._tcrRowHeights;try{handle.releasePointerCapture(id)}catch(_){}this._rowCleanup=null;};
+  const cancel=()=>{cleanup();if(table.isConnected)this.reflowTable(table);};
+  const up=ev=>{
+   if(ev.pointerId!==id)return;
+   const next=table._tcrRowHeights;cleanup();
+   if(!next||!table.isConnected)return;
+   const saved=this.runTableHistory(()=>{
+    const finalTid=this.commitColumnWidths(table,path,this.currentWidths(table));
+    if(finalTid)this.setRowHeights(path,finalTid,next);
+    return finalTid;
+   },snapshot);
+   if(saved)this.persist();
+   else new Notice('无法定位当前表格，行高调整已取消');
+   this.reflowTable(table);
+  };
   this._rowCleanup=cancel;window.addEventListener('pointermove',move,{capture:true,passive:false});window.addEventListener('pointerup',up,true);window.addEventListener('pointercancel',cancel,true);handle.addEventListener('lostpointercapture',cancel);
  }
  currentWidths(table){return Array.from(table.querySelector('colgroup')?.children||[],c=>c.style.width||'80px');}
@@ -428,7 +452,8 @@ module.exports=class TabletTableTools extends Base{
  }
  onunload(){
   this._ttLoaded=false;this._tapCleanup?.();this._rowCleanup?.();
-  window.visualViewport?.removeEventListener('resize',this._ttViewport);window.visualViewport?.removeEventListener('scroll',this._ttViewport);
+  window.visualViewport?.removeEventListener('resize',this._ttResize);window.visualViewport?.removeEventListener('scroll',this._ttViewport);
+  if(this._ttViewportFrame)cancelAnimationFrame(this._ttViewportFrame);
   document.removeEventListener('scroll',this._ttViewport,true);
   document.removeEventListener('pointerdown',this._ttOutside,true);
   for(const cleanup of this._ttCleanups?.values()||[])cleanup();this._ttCleanups?.clear();
