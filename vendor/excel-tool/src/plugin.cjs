@@ -28,9 +28,12 @@ module.exports=class TabletTableTools extends Base{
   document.addEventListener('scroll',viewport,true);
   window.visualViewport?.addEventListener('resize',viewport);window.visualViewport?.addEventListener('scroll',viewport);
   this._ttViewport=viewport;
-  this._ttOutside=e=>{const sel=this.targetSelection();if(sel&&!sel.table.contains(e.target)&&!e.target.closest?.('.tcr-merge-toolbar,.menu,.tt-open,.tcr-axis-rail')){this._ttToolsOpen=false;this._activeCell=null;this._touchRange=null;this.hideMergeToolbar();}};
+  this._ttOutside=e=>{const table=(this._touchRange||this._sel||this._activeCell)?.table;if(table&&!table.contains(e.target)&&!e.target.closest?.('.tcr-merge-toolbar,.menu,.tt-open,.tcr-axis-rail'))this.closeTableTools();};
   document.addEventListener('pointerdown',this._ttOutside,true);
-  this.registerEvent(this.app.workspace.on('active-leaf-change',()=>{this._activeCell=null;this._touchRange=null;this.hideMergeToolbar();}));
+  this.registerEvent(this.app.workspace.on('active-leaf-change',()=>{
+   const table=(this._touchRange||this._sel||this._activeCell)?.table;
+   if(table&&this.tableNotePath(table)!==this.currentPath())this.closeTableTools();
+  }));
   this.app.workspace.onLayoutReady(()=>{if(this._ttLoaded){this.processActive();this.scanEdit();this.reflow();}});
  }
  persist(){
@@ -60,27 +63,36 @@ module.exports=class TabletTableTools extends Base{
   this._ttToolsOpen=true;this._activeCell={table,path,tid,r1:merge?.r??r,r2:merge?merge.r+merge.rowspan-1:r,c1:merge?.c??c,c2:merge?merge.c+merge.colspan-1:c};this.refreshMergeToolbar();
  }
  startCellDrag(e,table,cell,path,tid){
+  if(e.isPrimary===false)return;
   this.rememberToolbarAnchor(table,cell,e);
-  if(this._touchRange?.table===table){
-   // A selection gesture uses two taps, never a scrolling drag.
+  const mode=this._touchRange?.table===table?this._touchRange:null;
+  const touch=e.pointerType==='touch'||e.pointerType==='pen';
+  if(mode||(!e.shiftKey&&touch&&this.isCellEdge(e,cell))){
+   // Commit only a completed tap. A swipe or another finger must not change
+   // the range or consume its starting point.
    e.preventDefault();e.stopImmediatePropagation();
    this._tapCleanup?.();const x=e.clientX,y=e.clientY,id=e.pointerId;
-   const clear=()=>{window.removeEventListener('pointerup',up,true);window.removeEventListener('pointercancel',clear,true);if(this._tapCleanup===clear)this._tapCleanup=null;};
-   const up=ev=>{if(ev.pointerId!==id)return;clear();if(Math.hypot(ev.clientX-x,ev.clientY-y)>12)return;
-    const r=this.cellRow(cell),c=this.cellCol(cell),mode=this._touchRange,anchor=mode?.anchor;
-    if(!mode||mode.table!==table)return;
-    if(mode.axis)this.selectTableAxis(table,{dataset:{tcrAxis:mode.axis,tcrIndex:String(mode.axis==='row'?r:c)},closest:()=>null},{shiftKey:!!anchor});
-    else this.selectRect(table,anchor?anchor.r:r,anchor?anchor.c:c,r,c,path,this.tableId(table));
-    if(anchor)this._touchRange=null;else this._touchRange={table,axis:mode.axis,anchor:{r,c}};
-    this.refreshMergeToolbar();
+   const moved=ev=>Math.hypot(ev.clientX-x,ev.clientY-y)>14;
+   const clear=()=>{
+    window.removeEventListener('pointermove',move,true);window.removeEventListener('pointerup',up,true);
+    window.removeEventListener('pointercancel',cancel,true);window.removeEventListener('blur',blur);
+    if(this._tapCleanup===clear)this._tapCleanup=null;
    };
-   window.addEventListener('pointerup',up,true);window.addEventListener('pointercancel',clear,true);this._tapCleanup=clear;return;
+   const move=ev=>{if(ev.pointerId===id&&moved(ev))clear();};
+   const cancel=ev=>{if(ev.pointerId===id)clear();};
+   const blur=ev=>{if(ev.target===window)clear();};
+   const up=ev=>{if(ev.pointerId!==id)return;clear();
+    if(!table.isConnected||!cell.isConnected||path!==this.currentPath()||moved(ev))return;
+    const {r,c}=this.logicalPointInCell(table,cell,x,y,path,tid),anchor=mode?.anchor;
+    if(mode&&this._touchRange!==mode)return;
+    this._touchRange=mode&&!anchor?{...mode,anchor:{r,c}}:null;this._ttToolsOpen=true;
+    if(mode?.axis)this.selectTableAxis(table,{dataset:{tcrAxis:mode.axis,tcrIndex:String(mode.axis==='row'?r:c)},closest:()=>null},{shiftKey:!!anchor});
+    else this.selectRect(table,anchor?.r??r,anchor?.c??c,r,c,path,this.tableId(table));
+   };
+   window.addEventListener('pointermove',move,true);window.addEventListener('pointerup',up,true);
+   window.addEventListener('pointercancel',cancel,true);window.addEventListener('blur',blur);this._tapCleanup=clear;return;
   }
-  if(!e.shiftKey&&this.isCellEdge(e,cell)){
-   e.preventDefault();e.stopImmediatePropagation();this.rememberToolbarAnchor(table,cell,e);this._ttToolsOpen=true;
-   this.selectRect(table,this.cellRow(cell),this.cellCol(cell),this.cellRow(cell),this.cellCol(cell),path,this.tableId(table));return;
-  }
-  if(e.pointerType==='touch'||e.pointerType==='pen'){
+  if(touch){
    this._ttToolsOpen=false;
    this.clearMergeSelection();this.resetNativeCellSelection(table);table.classList.add('tcr-cell-editing');
    const r=this.cellRow(cell),c=this.cellCol(cell);this._activeCell={table,path,tid,r1:r,r2:r,c1:c,c2:c};return;
@@ -90,7 +102,11 @@ module.exports=class TabletTableTools extends Base{
   super.startCellDrag(e,table,cell,path,tid);
   this.refreshMergeToolbar();
  }
- clearMergeSelection(preserveNative=false){super.clearMergeSelection(preserveNative);}
+ closeTableTools(){
+  this._tapCleanup?.();this._cellDragCleanup?.();
+  this._touchRange=null;this._activeCell=null;this._ttToolsOpen=false;this._toolbarAnchor=null;
+  super.closeTableTools();
+ }
  startDrag(e,colgroup,i,path,tid){
   const cell=e.currentTarget?.closest('td,th'),table=cell?.closest('table');
   if(cell&&table){this.clearMergeSelection();this.rememberToolbarAnchor(table,cell,e);this.activateCell(table,cell);}
@@ -138,7 +154,7 @@ module.exports=class TabletTableTools extends Base{
   if(this._ttCleanups?.has(table))return;
   const open=document.createElement('button');open.type='button';open.className='tt-open';open.title='表格工具';open.setAttribute('aria-label','打开此表格工具');renderIcon(open,'table-2');
   open.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();});
-  open.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();this.rememberToolbarAnchor(table,table.rows[0].cells[0],e);this._ttToolsOpen=true;this.selectWhole(table);});
+  open.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();this.closeTableTools();this.rememberToolbarAnchor(table,table.rows[0].cells[0],e);this._ttToolsOpen=true;this.selectWhole(table);});
   const activate=e=>{
    const cell=e.target.closest?.('td,th');
    if(cell?.closest('table')!==table)return;
@@ -238,11 +254,11 @@ module.exports=class TabletTableTools extends Base{
   }
   this.cellStyles[sel.path]||={};this.cellStyles[sel.path][sel.tid]=map;
  });}
- mergeSelectedCells(){
+ mergeSelectedCells(contentMode){
   const sel=this._sel;if(!sel)return;
   const reg={r:sel.r1,c:sel.c1,rowspan:sel.r2-sel.r1+1,colspan:sel.c2-sel.c1+1};
   if(core.freezeConflict([reg],this.optionsFor(sel.path,sel.tid))){new Notice('合并区域跨过固定边界，请先关闭对应固定选项');return;}
-  super.mergeSelectedCells();
+  super.mergeSelectedCells(contentMode);
  }
  setMerge(path,tid,reg){
   const changed=super.setMerge(path,tid,reg);
@@ -357,7 +373,10 @@ module.exports=class TabletTableTools extends Base{
    });
    const original=run=>()=>{const selection=this.ensureToolbarSelection();if(!selection)return;run(selection);this.refreshMergeToolbar();};
    const region=this.isMergeRegion(sel);
-   add('合并单元格',original(()=>this.mergeSelectedCells()),undefined,{disabled:!!sel.axis||this.selectionCells(sel).size<2||region||!this.selectionIsRectangle(sel)});
+   add('合并单元格',b=>{
+    const selection=this.ensureToolbarSelection();
+    if(selection)this.menu(b,this.mergeContentActions(selection));
+   },undefined,{disabled:!!sel.axis||this.selectionCells(sel).size<2||region||!this.selectionIsRectangle(sel)});
    add('拆分单元格',original(()=>this.splitSelectedCell()),undefined,{disabled:!!sel.axis||!region});
    for(const [value,label,axis]of [['left','左对齐','horizontal'],['center','居中对齐','horizontal'],['right','右对齐','horizontal'],['top','顶部对齐','vertical'],['middle','垂直居中','vertical'],['bottom','底部对齐','vertical']])
     add(label,original(()=>this.setSelectionAlignment(value,axis)),this._sel?this.selectionAlignment(axis)===value:undefined);
@@ -375,7 +394,7 @@ module.exports=class TabletTableTools extends Base{
   }
   add('更多',b=>this.menu(b,this._toolbarActions.filter(v=>!v.disabled).map(v=>[v.label,()=>v.action(b)])),undefined,{fixed:true});
   add('自定义工具栏',b=>this.customizeToolbar(b),undefined,{fixed:true});
-  add('关闭',()=>{this._touchRange=null;this._activeCell=null;this._ttToolsOpen=false;this._toolbarAnchor=null;this.clearMergeSelection();},undefined,{fixed:true});this.positionMergeToolbar(sel);
+  add('关闭',()=>this.closeTableTools(),undefined,{fixed:true});this.positionMergeToolbar(sel);
  }
  showMergeToolbar(show){
   const exists=!!this._toolbar;super.showMergeToolbar(show);

@@ -36,6 +36,48 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    await mousePage.locator('h2').click();
    a.equal(await bar.isVisible(),false);
   });
+  await check('switching to the native cell editor preserves ordinary and merged cell geometry',async()=>{
+   const layouts=await mousePage.evaluate(()=>{
+    const measure=cell=>{const {x,y,width,height}=cell.getBoundingClientRect();return [x,y,width,height];};
+    return [['other',1,0],['existing',2,2]].map(([id,r,c])=>{
+     const cell=document.getElementById(id).rows[r].cells[c],wrapper=document.createElement('div');
+     wrapper.className='table-cell-wrapper';wrapper.innerHTML='<strong>渲染文字</strong><br>第二行<br>第三行<br>第四行';
+     cell.replaceChildren(wrapper);
+     const before=measure(cell),active=document.createElement('div');active.className='table-cell-wrapper';
+     wrapper.style.display='none';cell.appendChild(active);
+     const editorHost=document.createElement('div');editorHost.className='cm-s-obsidian mod-cm6';active.appendChild(editorHost);
+     const cm=new TestCM.view.EditorView({doc:'**渲染文字**<br>第二行',parent:editorHost});
+     const editing=measure(cell);cm.destroy();active.remove();wrapper.style.display='';
+     return {before,editing,after:measure(cell)};
+    });
+   });
+   for(const {before,editing,after} of layouts){a.deepEqual(editing,before);a.deepEqual(after,before);}
+  });
+  await check('opening a formatted header editor does not change the table layout key',async()=>{
+   const keys=await mousePage.evaluate(()=>{
+    const table=document.getElementById('other'),cell=table.rows[0].cells[1],rendered=document.createElement('div');
+    rendered.className='table-cell-wrapper';rendered.innerHTML='<strong>标题</strong>';cell.replaceChildren(rendered);
+    const before=p.baseTableId(table),active=document.createElement('div');active.className='table-cell-wrapper';
+    rendered.style.display='none';cell.appendChild(active);
+    const editorHost=document.createElement('div');editorHost.className='cm-s-obsidian mod-cm6';active.appendChild(editorHost);
+    const cm=new TestCM.view.EditorView({doc:'**标题**',parent:editorHost});
+    const after=p.baseTableId(table);cm.destroy();active.remove();rendered.style.display='';
+    return [before,after];
+   });
+   a.equal(keys[1],keys[0]);
+  });
+  await check('mouse drag selects on the first adjacent cell hit from text or the cell edge',async()=>{
+   const run=async edge=>{
+    const table=mousePage.locator('#existing'),row=table.locator('tbody tr').first();
+    await row.locator('td').nth(0).scrollIntoViewIfNeeded();
+    const first=await row.locator('td').nth(0).boundingBox(),second=await row.locator('td').nth(1).boundingBox();
+    const y=first.y+(edge?2:first.height/2);
+    await mousePage.mouse.move(first.x+first.width/2,y);await mousePage.mouse.down();
+    await mousePage.mouse.move(second.x+second.width/2,y);await mousePage.mouse.up();
+    a.deepEqual(await mousePage.evaluate(()=>p._sel&&[p._sel.r1,p._sel.c1,p._sel.r2,p._sel.c2]),[1,0,1,1]);
+   };
+   await run(false);await run(true);
+  });
  }finally{await desktop.close();}
  const context=await browser.newContext({viewport:{width:1000,height:1100},hasTouch:true,isMobile:true});const page=await context.newPage();page.setDefaultTimeout(6000);page.on('pageerror',e=>errors.push(e.message));
  await page.goto(fixtureUrl);await page.waitForFunction(()=>window.ready);
@@ -95,6 +137,19 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   await page.evaluate(()=>{document.getElementById('existing').parentElement.scrollLeft=0;});
  });
  await check('normal touch edits without installing range-drag listeners or opening tools',async()=>{await cell(1,0).tap();a.equal(await page.evaluate(()=>!!p._drag),false);a.equal(await page.evaluate(()=>!!p._sel),false);a.equal(await page.locator('.tt-toolbar:visible').count(),0);await edge(cell(1,0));});
+ await check('a touch swipe returning to its start does not select, and Escape exits range mode',async()=>{
+  const state=await page.evaluate(()=>{
+   const table=document.getElementById('existing'),cell=table.rows[1].cells[0],rect=cell.getBoundingClientRect();
+   p.clearMergeSelection();p._touchRange={table,anchor:null};
+   const pointer=(target,type,x)=>target.dispatchEvent(new PointerEvent(type,{bubbles:true,isPrimary:true,pointerId:19,pointerType:'touch',clientX:rect.left+x,clientY:rect.top+12}));
+   pointer(cell,'pointerdown',30);pointer(window,'pointermove',65);pointer(window,'pointerup',30);
+   const afterSwipe={range:!!p._sel,anchor:p._touchRange.anchor};
+   document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}));
+   return {afterSwipe,rangeMode:!!p._touchRange,listener:!!p._tapCleanup};
+  });
+  a.deepEqual(state,{afterSwipe:{range:false,anchor:null},rangeMode:false,listener:false});
+  await edge(cell(1,0));
+ });
  await check('icon toolbar touch targets are at least 40px',async()=>{const sizes=await page.locator('.tt-toolbar button').evaluateAll(bs=>bs.map(b=>[b.getBoundingClientRect().width,b.getBoundingClientRect().height]));a.ok(sizes.length&&sizes.every(([w,h])=>w>=40&&h>=40));});
  await check('customization persists hidden icons without removing commands or table data',async()=>{
   await action('自定义工具栏','显示：居中对齐');a.equal(await page.locator('.tt-toolbar').getByRole('button',{name:'居中对齐',exact:true}).count(),0);
@@ -170,7 +225,7 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
  });
  await check('rich clipboard denial reports fallback without false success',async()=>{await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{write:async()=>{throw Error('denied')},writeText:async text=>window.copiedPlain=text}}));await action('复制/导出','复制到 Excel');a.match(await page.evaluate(()=>notices.at(-1)),/纯文本/);await action('复制/导出','复制纯文本');a.ok(await page.evaluate(()=>copiedPlain.includes('\t')));});
  await check('dark theme changes semantic cell colors',async()=>{await page.evaluate(()=>{document.body.classList.add('theme-dark');p.selectRect(document.getElementById('existing'),1,0,1,0,'sample.md','uexisting');p.setCellStyle('bg','blue')});a.equal(await cell(1,0).evaluate(c=>getComputedStyle(c).backgroundColor),'rgb(41, 66, 94)');});
- await check('direct merge and split icons execute original source and metadata operations',async()=>{
+ await check('merge menu supports both content choices, with native undo and redo',async()=>{
   await page.evaluate(()=>{
    window.beforeScratchSource=editor.getValue();window.beforeScratchMapping=p.tableSourceInfo;
    const lines=[p.buildRow([p.encodeInvisibleUid('scratch')+'A','B']),p.buildRow(['---','---']),p.buildRow(['甲','乙'])];
@@ -181,7 +236,17 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    p.tableSourceInfo=(ed,t)=>t.id==='scratch'?nativeMapping.call(p,ed,t):beforeScratchMapping(ed,t);
    const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.selectRect(table,1,0,1,1,'sample.md',p.tableId(table));
   });
-  a.equal(await page.getByRole('button',{name:'合并单元格',exact:true}).isEnabled(),true);await page.getByRole('button',{name:'合并单元格',exact:true}).click();
+  const before=await page.evaluate(()=>editor.getValue());
+  const choose=async title=>{await page.getByRole('button',{name:'合并单元格',exact:true}).click();await page.getByRole('button',{name:title,exact:true}).click();};
+  await choose('仅保留左上格内容');
+  a.match(await page.evaluate(()=>editor.getValue()),/\| 甲 \|\s+\|/);
+  a.doesNotMatch(await page.evaluate(()=>editor.getValue()),/乙/);
+  await page.evaluate(()=>TestCM.commands.undo(editor.cm));
+  a.equal(await page.evaluate(()=>editor.getValue()),before);
+  await page.evaluate(()=>TestCM.commands.redo(editor.cm));
+  a.doesNotMatch(await page.evaluate(()=>editor.getValue()),/乙/);
+  await page.evaluate(()=>{TestCM.commands.undo(editor.cm);const table=renderScratch();p.selectRect(table,1,0,1,1,'sample.md',p.tableId(table));});
+  await choose('保留全部内容');
   a.match(await page.evaluate(()=>editor.getValue()),/甲<br>乙/);a.equal(await page.evaluate(()=>p.merges['sample.md'].uscratch.length),1);
   await page.evaluate(()=>{const table=renderScratch();p.clearMergeSelection();p._toolbarAnchor=null;p.activateCell(table,table.rows[1].cells[0]);});
   a.equal(await page.getByRole('button',{name:'拆分单元格',exact:true}).isEnabled(),true);await page.getByRole('button',{name:'拆分单元格',exact:true}).click();

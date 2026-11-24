@@ -2150,6 +2150,21 @@ table.tcr-selection-owned .tcr-axis-cell-selected.tcr-sel::before { display: non
 table[data-tcr] [data-tcr-align] :is(.table-cell-content, .table-cell-wrapper, .cm-content, .cm-line) {
   text-align: inherit !important;
 }
+/* The rendered cell still sizes the row while Obsidian shows its raw Markdown
+   editor. Keep the editor within that box and let its own scroller handle edits. */
+table[data-tcr] :is(th, td):has(> .table-cell-wrapper .cm-editor)
+  > .table-cell-wrapper:not(:has(.cm-editor)) {
+  display: block !important;
+  visibility: hidden;
+}
+table[data-tcr] :is(th, td) > .table-cell-wrapper:has(.cm-editor) {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+table[data-tcr] .table-cell-wrapper :is(.cm-s-obsidian:has(> .cm-editor), .cm-editor) { height: 100%; }
+table[data-tcr] .table-cell-wrapper .cm-editor > .cm-scroller { overflow: auto !important; }
 .tcr-merged-hidden { display: none; }
 
 /* One logical layout across THEAD/TBODY; retain editor-owned DOM and indexes. */

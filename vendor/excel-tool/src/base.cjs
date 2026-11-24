@@ -1,4 +1,8 @@
 const { Plugin, MarkdownView, Notice, setIcon } = require('obsidian');
+const MERGE_CONTENT_OPTIONS = [
+  ['保留全部内容', 'all'],
+  ['仅保留左上格内容', 'top-left'],
+];
 
 module.exports = class TableColumnResize extends Plugin {
   async onload() {
@@ -58,8 +62,13 @@ module.exports = class TableColumnResize extends Plugin {
 
     this.addCommand({
       id: 'merge-selected-cells',
-      name: 'Merge selected cells',
+      name: '合并单元格并保留全部内容',
       callback: () => this.mergeSelectedCells(),
+    });
+    this.addCommand({
+      id: 'merge-selected-cells-top-left',
+      name: '合并单元格并仅保留左上格内容',
+      callback: () => this.mergeSelectedCells('top-left'),
     });
     this.addCommand({
       id: 'split-cell',
@@ -104,7 +113,7 @@ module.exports = class TableColumnResize extends Plugin {
     this._toolbarViewport=()=>{if(this._sel)this.positionMergeToolbar(this._sel);};
     document.addEventListener('scroll',this._toolbarViewport,true);
     window.addEventListener('resize',this._toolbarViewport);
-    this._toolbarKey=e=>{if(e.key==='Escape')this.hideMergeToolbar();};
+    this._toolbarKey=e=>{if(e.key==='Escape')this.closeTableTools();};
     document.addEventListener('keydown',this._toolbarKey);
     this._tableCopy=e=>this.handleTableCopy(e);
     this._tablePaste=e=>this.handleTablePaste(e);
@@ -167,11 +176,9 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   processActive() {
-    const file = this.app.workspace.getActiveFile();
-    const path = file ? file.path : 'unknown';
     document
       .querySelectorAll('.markdown-preview-view table')
-      .forEach((table) => this.enhance(table, { sourcePath: path }, false));
+      .forEach((table) => this.enhance(table, { sourcePath: this.tableNotePath(table) }, false));
   }
 
   tableMutationsNeedScan(records) {
@@ -181,7 +188,7 @@ module.exports = class TableColumnResize extends Plugin {
     const controls='.tcr-handle,.tcr-row-handle,.tcr-axis-rail,.tcr-selection-rect,.tcr-merge-toolbar,.tcr-sel-edge,.cm-cursorLayer,.cm-selectionLayer';
     return records.some(record=>{
       const target=record.target.nodeType===1?record.target:record.target.parentElement;
-      if(target?.closest(controls))return false;
+      if(target?.closest(controls + ', :is(th,td) .cm-editor'))return false;
       const nodes=[...record.addedNodes,...record.removedNodes].filter(node=>
         !(node.nodeType===1 && node.matches(controls)));
       if(!nodes.length)return false;
@@ -204,11 +211,15 @@ module.exports = class TableColumnResize extends Plugin {
       if (rail._tcrTable.isConnected) return true;
       this.removeAxisRail(rail); return false;
     });
-    const file = this.app.workspace.getActiveFile();
-    const path = file ? file.path : 'unknown';
     document
       .querySelectorAll('.cm-content table')
-      .forEach((table) => this.enhance(table, { sourcePath: path }, true));
+      .forEach((table) => this.enhance(table, { sourcePath: this.tableNotePath(table) }, true));
+  }
+
+  tableNotePath(table) {
+    const workspace = this.app.workspace;
+    const leaf = workspace.getLeavesOfType?.('markdown').find(({view}) => view.contentEl?.contains(table));
+    return leaf?.view.file?.path || table.dataset.tcrPath || this.currentPath();
   }
 
   // ---- per-table identity ------------------------------------------------
@@ -220,8 +231,9 @@ module.exports = class TableColumnResize extends Plugin {
     const cells = table.querySelectorAll('thead th, thead td');
     let key = '';
     for (const c of cells) {
-      // A live header may contain both the hidden rendered text and its editor.
-      const content = c.querySelector?.('.table-cell-wrapper .cm-content') || c.querySelector?.('.table-cell-content') || c;
+      // Keep the rendered name while the raw Markdown editor is open.
+      const content = c.querySelector?.(':scope > .table-cell-wrapper:not(:has(.cm-editor)), .table-cell-content') ||
+        c.querySelector?.('.table-cell-wrapper .cm-content') || c;
       key += (content.textContent || '').trim() + '\u0001';
     }
     let h = 5381;
@@ -257,7 +269,7 @@ module.exports = class TableColumnResize extends Plugin {
       uid = firstHeader && this.decodeInvisibleUid(firstHeader.textContent || '');
     }
     if (!uid) {
-      const editor = this.app && this.app.workspace ? this.activeEditor() : null;
+      const editor = this.app?.workspace && this.tableNotePath(table) === this.currentPath() ? this.activeEditor() : null;
       const info = editor && this.tableSourceInfo(editor, table);
       uid = info && (info.uid || this.uidFromGrid(info.grid));
     }
@@ -810,8 +822,7 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   reflowTable(table) {
-    const file = this.app.workspace.getActiveFile();
-    const path = table.dataset.tcrPath || (file ? file.path : 'unknown');
+    const path = table.dataset.tcrPath || this.tableNotePath(table);
     const preview = table.closest('.markdown-preview-view');
     const allowDrag = !preview; // edit (Live Preview) => drag handles
     const headCols = table.querySelectorAll('thead th, thead td');
@@ -900,11 +911,10 @@ module.exports = class TableColumnResize extends Plugin {
     const headCols = table.querySelectorAll('thead th, thead td');
     const n = headCols.length;
     if (!n) return;
-    const tid = this.tableId(table);
-    this.reconcileTableDimensions(table, path, tid, n);
-
     table.dataset.tcr = '1';
     table.dataset.tcrPath = path;
+    const tid = this.tableId(table);
+    this.reconcileTableDimensions(table, path, tid, n);
     table.style.tableLayout = 'fixed';
     table.style.maxWidth = 'none';
 
@@ -952,10 +962,8 @@ module.exports = class TableColumnResize extends Plugin {
   // ---- cell merge (Excel-style) ----------------------------------------
   // Merge info is stored per table in data.json:
   //   merges[path][tid] = [{ r, c, rowspan, colspan }, ...]
-  // On merge the source is rewritten like Excel: the top-left cell keeps all
-  // inherited content (same-row cells first, then following rows; joined with
-  // <br>), and the other cells in the range are emptied. Splitting restores
-  // the grid; the content stays consolidated in the top-left cell.
+  // A merge keeps either the anchor text or all non-empty values in row order.
+  // The top-left cell contains the result and covered cells become empty.
 
   currentPath() {
     const file = this.app.workspace.getActiveFile();
@@ -1452,17 +1460,15 @@ module.exports = class TableColumnResize extends Plugin {
     }
     return ranges;
   }
-  rewriteSourceMerge(editor, table, r1, c1, r2, c2) {
+  rewriteSourceMerge(editor, table, r1, c1, r2, c2, contentMode) {
     const info = this.tableSourceInfo(editor, table);
     if (!info) return false;
     const { grid } = info;
     if (![r1, c1, r2, c2].every(Number.isInteger) || r1 < 0 || c1 < 0 ||
         r2 < r1 || c2 < c1 || r2 >= grid.length) return false;
     for (let r = r1; r <= r2; r++) if (!grid[r] || c2 >= grid[r].length) return false;
-    const parts = [grid[r1][c1]];
-    for (let cc = c1 + 1; cc <= c2; cc++) parts.push(grid[r1][cc]);
-    for (let rr = r1 + 1; rr <= r2; rr++)
-      for (let cc = c1; cc <= c2; cc++) parts.push(grid[rr][cc]);
+    const parts = contentMode === 'top-left' ? [grid[r1][c1]] :
+      grid.slice(r1, r2 + 1).flatMap(row => row.slice(c1, c2 + 1));
     const combined = parts.map((p) => this.stripTableIdentity(p))
       .filter((p) => p && p.trim() !== '').join('<br>');
     const ng = grid.map((row) => row.slice());
@@ -1501,7 +1507,13 @@ module.exports = class TableColumnResize extends Plugin {
     return { tid: 'u' + uid };
   }
 
-  mergeSelectedCells() {
+  mergeContentActions(sel) {
+    return MERGE_CONTENT_OPTIONS.map(([label, mode]) => [label, () => {
+      if (this._sel === sel) this.mergeSelectedCells(mode);
+    }]);
+  }
+
+  mergeSelectedCells(contentMode = 'all') {
     let sel = this._sel;
     if (!sel || sel.axis) return;
     if (sel.table.isConnected === false || (this.app && this.currentPath() !== sel.path)) {
@@ -1523,9 +1535,8 @@ module.exports = class TableColumnResize extends Plugin {
       .map((m) => ({ ...m }));
     const priorHeights = this.getRowHeights(sel.path, sel.tid);
     const mergedHeight = this.preserveSelectedRowHeights(sel.table, sel.path, sel.tid, sel.r1, sel.r2);
-    const editTables = Array.from(document.querySelectorAll('.cm-content table'));
-    const tableOrdinal = Math.max(0, editTables.indexOf(sel.table));
-    const result = this.rewriteSourceMerge(editor, sel.table, sel.r1, sel.c1, sel.r2, sel.c2);
+    const tableOrdinal = Math.max(0, this.tablePeers(sel.table).indexOf(sel.table));
+    const result = this.rewriteSourceMerge(editor, sel.table, sel.r1, sel.c1, sel.r2, sel.c2, contentMode);
     if (!result) {
       if (priorHeights) this.setRowHeights(sel.path, sel.tid, priorHeights);
       else if (this.rowHeights[sel.path]) delete this.rowHeights[sel.path][sel.tid];
@@ -1592,6 +1603,7 @@ module.exports = class TableColumnResize extends Plugin {
     if (!editor || table.isConnected === false || path !== this.currentPath()) return;
     const info = this.tableSourceInfo(editor, table);
     if (!info) { new Notice('TableTune: 无法定位表格源码，插入已取消'); return; }
+    const ordinal = this.tablePeers(table).indexOf(table);
     const grid = info.grid.map(row => row.slice()), oldRows = grid.length, oldCols = grid[0].length;
     const total = axis === 'row' ? oldRows : oldCols;
     if (!Number.isInteger(at) || at < 0 || at > total || grid.some(row => row.length !== oldCols)) return;
@@ -1617,7 +1629,6 @@ module.exports = class TableColumnResize extends Plugin {
     if(this.alignments?.[path]?.[oldTid])this.alignments[path][tid]=this.remapAlignments(this.alignments[path][oldTid],axis,i=>i>=at?i+1:i);
     if (!this.tableDims[path]) this.tableDims[path]={};
     this.tableDims[path][tid]={rows:grid.length,cols:grid[0].length};
-    const ordinal=Array.from(document.querySelectorAll('.cm-content table')).indexOf(table);
     this.clearMergeSelection(); this.persist();
     this.rekeyAfterSourceChange(path,tid,Math.max(0,ordinal),table);
     return tid;
@@ -1639,8 +1650,7 @@ module.exports = class TableColumnResize extends Plugin {
       new Notice('TableTune: 表格已刷新或笔记已切换，请重新选择');
       return;
     }
-    const editTables = Array.from(document.querySelectorAll('.cm-content table'));
-    const tableOrdinal = Math.max(0, editTables.indexOf(sel.table));
+    const tableOrdinal = Math.max(0, this.tablePeers(sel.table).indexOf(sel.table));
     const info = this.tableSourceInfo(editor, sel.table);
     if (!info) {
       new Notice('TableTune: 无法定位表格源码，删除已取消');
@@ -1751,7 +1761,9 @@ module.exports = class TableColumnResize extends Plugin {
     const root = sourceTable?.closest?.('.cm-content, .markdown-preview-view');
     setTimeout(() => {
       if (path !== this.currentPath()) return;
-      const tables = Array.from((root || document).querySelectorAll(root ? 'table' : '.cm-content table'));
+      const scope = root?.isConnected ? root : document;
+      const tables = Array.from(scope.querySelectorAll(scope === document ? '.cm-content table' : 'table'))
+        .filter(table => this.tableNotePath(table) === path);
       const stable = oldTid.startsWith('u');
       // Never transfer a stable table's metadata to a positional neighbour.
       // Partial rendering/virtualization can change both table count and order.
@@ -2477,36 +2489,6 @@ module.exports = class TableColumnResize extends Plugin {
     });
   }
 
-  cellDragText(cell) {
-    // Ignore handles, hidden merge placeholders and CodeMirror decorations.
-    const content=cell.querySelector('.cm-content,[contenteditable="true"],.table-cell-wrapper') || cell;
-    const walker=cell.ownerDocument.createTreeWalker(content,4);
-    let text='',node;
-    while ((node=walker.nextNode())) {
-      if (node.parentElement.closest('.table-row-drag-handle,.table-col-drag-handle,.cm-cursorLayer,.cm-selectionLayer,.tcr-merged-hidden')) continue;
-      text+=node.nodeValue;
-    }
-    return text.replace(/[\u200b-\u200d\u2060-\u206f\ufeff]/g,'');
-  }
-
-  selectCellDragText(d, selectAll=false) {
-    const session=this.activeEditor()?.editorComponent?.tableCell,cm=session?.cm;
-    if (session?.table?.tableEl===d.table && cm?.contentDOM && d.cell.contains(cm.contentDOM)) {
-      const length=cm.state.doc.length,range=cm.state.selection.main;
-      if (selectAll) cm.dispatch({selection:{anchor:0,head:length}});
-      return length>0 && (selectAll || (range.from===0 && range.to===length));
-    }
-    const selection=d.table.ownerDocument.defaultView.getSelection();
-    if (!selection) return false;
-    if (selectAll) {
-      const range=d.table.ownerDocument.createRange();
-      range.selectNodeContents(d.cell.querySelector('[contenteditable="true"],.table-cell-wrapper') || d.cell);
-      selection.removeAllRanges();selection.addRange(range);
-    }
-    return d.cell.contains(selection.anchorNode) && d.cell.contains(selection.focusNode) &&
-      selection.toString().replace(/\s/g,'')===this.cellDragText(d.cell).replace(/\s/g,'');
-  }
-
   captureCellTextRange(d) {
     const session=this.activeEditor()?.editorComponent?.tableCell,cm=session?.cm;
     if(session?.table?.tableEl===d.table && d.cell.contains(cm?.contentDOM)){
@@ -2552,63 +2534,39 @@ module.exports = class TableColumnResize extends Plugin {
     }
     this._lastTableCell = { path, tid, r: startR, c: startC, time: Date.now() };
     this._drag = { table, cell, path, tid, startR, startC, endR: start.r, endC: start.c,
-      textPending: !extending && !!this.cellDragText(cell).trim(),
-      x: e.clientX, y: e.clientY, active: !!extending };
+      textPending: !e.shiftKey, active: !!e.shiftKey };
     const gesture=this._drag;
-    if (extending) this.selectRect(table,startR,startC,start.r,start.c,path,tid);
+    if (gesture.active) this.selectRect(table,startR,startC,start.r,start.c,path,tid);
     const onMove = (ev) => {
-      const d = this._drag; if (d!==gesture) return;
+      const d = this._drag; if (d!==gesture || ev.pointerId!==e.pointerId) return;
       if(!table.isConnected){cancel();return;}
-      if (d.textPending) {
-        const rect=d.cell.getBoundingClientRect();
-        const inside=ev.clientX>=rect.left && ev.clientX<=rect.right && ev.clientY>=rect.top && ev.clientY<=rect.bottom;
-        // Let the cell editor/browser own dragging while inside the text cell.
-        if (inside) { d.textExit=null;return; }
-        ev.preventDefault();ev.stopImmediatePropagation();
-        if (!d.textExit && !this.selectCellDragText(d)) {
-          this.selectCellDragText(d,true);
-          d.textExit={x:ev.clientX,y:ev.clientY};return;
-        }
-        if (d.textExit && Math.abs(ev.clientX-d.textExit.x)+Math.abs(ev.clientY-d.textExit.y)<6) return;
-        d.textPending=false;
-      }
-      if (!d.active) {
-        if (Math.abs(ev.clientX - d.x) + Math.abs(ev.clientY - d.y) < 6) return;
-        d.active = true;
-      }
+      const target = table.ownerDocument.elementFromPoint(ev.clientX, ev.clientY)?.closest('td,th');
+      const targetCell = target?.closest('table') === table ? target : null;
+      // The native editor owns dragging inside the starting cell. The first
+      // hit on another cell immediately switches to a spreadsheet range.
+      if (!d.active && (!targetCell || targetCell === cell)) return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
-      let endR = d.endR, endC = d.endC;
-      const target = document.elementFromPoint(ev.clientX, ev.clientY);
-      const tcell = target && target.closest('td,th');
-      if (tcell && d.table.contains(tcell)) {
-        const end = this.logicalPointInCell(d.table, tcell, ev.clientX, ev.clientY, d.path, d.tid);
-        endR = end.r; endC = end.c;
-      }
-      d.endR = endR; d.endC = endC;
-      this.selectRect(d.table, Math.min(d.startR, endR), Math.min(d.startC, endC),
-        Math.max(d.startR, endR), Math.max(d.startC, endC), d.path, d.tid);
+      if (!targetCell) return;
+      const {r,c} = this.logicalPointInCell(table,targetCell,ev.clientX,ev.clientY,path,tid);
+      if (d.active && r===d.endR && c===d.endC) return;
+      d.active = true;d.textPending = false;d.endR = r;d.endC = c;
+      this.selectRect(table,startR,startC,r,c,path,tid);
     };
     const onTextMouseMove = ev => {
-      const d=this._drag;
-      if (d!==gesture) return;
-      const rect=d.cell.getBoundingClientRect();
-      if (d.active || (d.textPending && (ev.clientX<rect.left || ev.clientX>rect.right || ev.clientY<rect.top || ev.clientY>rect.bottom))) {
+      if (this._drag===gesture && gesture.active) {
         // The compatibility mousemove follows pointermove. Do not let the
         // native editor overwrite the completed text or cell selection.
         ev.preventDefault();ev.stopImmediatePropagation();
-        if (d.textPending && d.textExit) requestAnimationFrame(()=>{
-          if (this._drag===d && d.textPending && d.textExit) this.selectCellDragText(d,true);
-        });
       }
     };
     const onUp = (ev) => {
+      if (ev.pointerId!==e.pointerId) return;
       if(this._drag!==gesture){cleanup();return;}
       const d = gesture;cleanup();
       if (d && !d.active) {
         // Keep native click/focus handling intact so the caret can enter text.
         this.clearMergeSelection();
-        if (d.textPending && d.textExit) this.selectCellDragText(d,true);
         this._textRange=this.captureCellTextRange(d);
       }
       if(d?.active){
@@ -2626,7 +2584,8 @@ module.exports = class TableColumnResize extends Plugin {
       if(this._drag===gesture)this._drag=null;
       if(this._cellDragCleanup===cleanup)this._cellDragCleanup=null;
     };
-    const cancel=()=>{
+    const cancel=(ev)=>{
+      if (ev?.pointerId!=null && ev.pointerId!==e.pointerId) return;
       cleanup();
       if(this._sel?.table===table)this.clearMergeSelection();
     };
@@ -2840,7 +2799,7 @@ module.exports = class TableColumnResize extends Plugin {
       const title=action.title,group=/顶部对齐|垂直居中|底部对齐/.test(title)?'vertical-align':/对齐/.test(title)?'align':/删除/.test(title)?'delete':/插入/.test(title)?'insert':'merge';
       if(previousGroup && previousGroup!==group){const sep=document.createElement('span');sep.className='tcr-toolbar-separator';sep.setAttribute('role','separator');bar.appendChild(sep);}
       previousGroup=group;
-      const icon=title==='清空内容'?'eraser':title==='合并单元格'?'combine':title==='拆分单元格'?'split':
+      const icon=title==='清空内容'?'eraser':title.startsWith('合并单元格')?'combine':title==='拆分单元格'?'split':
         title==='左对齐'?'align-left':title==='居中对齐'?'align-center':title==='右对齐'?'align-right':
         title==='顶部对齐'?'align-vertical-justify-start':title==='垂直居中'?'align-vertical-justify-center':title==='底部对齐'?'align-vertical-justify-end':
         /上方/.test(title)?'arrow-up-to-line':/下方/.test(title)?'arrow-down-to-line':
@@ -2871,6 +2830,10 @@ module.exports = class TableColumnResize extends Plugin {
 
   hideMergeToolbar() {
     if (this._toolbar) this._toolbar.style.display = 'none';
+  }
+
+  closeTableTools() {
+    this.clearMergeSelection();
   }
 
   positionMergeToolbar(sel) {
@@ -2923,10 +2886,9 @@ module.exports = class TableColumnResize extends Plugin {
     const area = sel ? this.selectionCells(sel).size : 0;
     const isRegion = sel ? this.isMergeRegion(sel) : false;
     if (sel && area >= 2 && !isRegion && this.selectionIsRectangle(sel)) {
-      menu.addItem((item) => {
-        item.setTitle('合并单元格');
-        item.onClick(() => this.mergeSelectedCells());
-      });
+      for (const [label, run] of this.mergeContentActions(sel)) {
+        menu.addItem(item => item.setTitle('合并单元格 · ' + label).onClick(run));
+      }
     }
     if (sel) {
       menu.addItem((item) => {

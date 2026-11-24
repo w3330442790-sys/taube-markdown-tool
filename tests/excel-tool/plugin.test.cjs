@@ -12,6 +12,14 @@ function fixture(){
  return {p,notices};
 }
 const plain=x=>JSON.parse(JSON.stringify(x));
+test('split panes resolve table settings to their owning note',()=>{
+ const {p}=fixture(),table={dataset:{}};
+ p.app={workspace:{getActiveFile:()=>({path:'active.md'}),getLeavesOfType:()=>[
+  {view:{file:{path:'active.md'},contentEl:{contains:()=>false}}},
+  {view:{file:{path:'other.md'},contentEl:{contains:node=>node===table}}}
+ ]}};
+ a.equal(p.tableNotePath(table),'other.md');
+});
 test('persist preserves unknown data and legacy table layout',async()=>{
  const {p}=fixture();p.widths={'note.md':{t:['100px','200px']}};p.merges={'note.md':{t:[{r:1,c:0,rowspan:1,colspan:2}]}};
  a.equal(typeof p.persist,'function');await p.persist();a.deepEqual(plain(p.saved.customFuture),{keep:true});a.deepEqual(plain(p.saved.widths),p.widths);a.deepEqual(plain(p.saved.merges),p.merges);
