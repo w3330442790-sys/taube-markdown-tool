@@ -114,6 +114,34 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
    };
    await run(false);await run(true);
   });
+  await check('right-click exposes basic actions and can insert a line break at the caret',async()=>{
+   const target=mousePage.locator('#other tbody td').first();
+   await target.evaluate(cell=>{
+    p.clearMergeSelection();
+    const wrapper=document.createElement('div');wrapper.className='table-cell-wrapper';cell.appendChild(wrapper);
+    const cm=window.cellEditor=new TestCM.view.EditorView({doc:'甲乙',parent:wrapper});
+    editor.editorComponent={tableCell:{cm,table:{tableEl:cell.closest('table')}}};
+    cm.dispatch({selection:{anchor:1}});cm.focus();
+   });
+   await target.scrollIntoViewIfNeeded();
+   const point=await mousePage.evaluate(()=>{
+    const caret=cellEditor.coordsAtPos(1);
+    return {x:caret.left,y:(caret.top+caret.bottom)/2};
+   });
+   await mousePage.mouse.click(point.x,point.y,{button:'right'});
+   const menu=mousePage.locator('.menu:visible');
+   for(const name of ['在单元格内换行','复制内容','粘贴','清空内容','在下方插入行','在右侧插入列','删除列'])
+    a.equal(await menu.getByRole('button',{name,exact:true}).isVisible(),true,name);
+   await menu.getByRole('button',{name:'在单元格内换行',exact:true}).click();
+   a.deepEqual(await mousePage.evaluate(()=>[cellEditor.state.doc.toString(),cellEditor.state.selection.main.head]),['甲\n乙',2]);
+   const touch=await mousePage.evaluate(()=>{
+    const event=new InputEvent('beforeinput',{bubbles:true,cancelable:true,inputType:'insertLineBreak'});
+    cellEditor.contentDOM.dispatchEvent(event);
+    const result=[event.defaultPrevented,cellEditor.state.doc.toString()];
+    cellEditor.destroy();delete editor.editorComponent;return result;
+   });
+   a.deepEqual(touch,[true,'甲\n\n乙']);
+  });
  }finally{await desktop.close();}
  const context=await browser.newContext({viewport:{width:1000,height:1100},hasTouch:true,isMobile:true});const page=await context.newPage();page.setDefaultTimeout(6000);page.on('pageerror',e=>errors.push(e.message));
  await page.goto(fixtureUrl);await page.waitForFunction(()=>window.ready);
@@ -366,6 +394,25 @@ async function check(name,run){await run();results.push(name);console.log('PASS 
   await select(1,0);await button('重做').click();
   a.equal((await lines())[4],'  | 甲 |  | 乙 |');
   a.equal((await lines())[3],'  | :--- | --- | ---: |');
+ });
+ await check('right-click line breaks and plain-text paste preserve list table structure',async()=>{
+  const getLines=()=>page.evaluate(()=>p.stripTableIdentity(editor.getValue()).split('\n'));
+  const open=async()=>{
+   await page.evaluate(()=>{renderScratch();p.clearMergeSelection();});
+   await page.locator('#scratch tbody tr').first().locator('td').first().click({button:'right'});
+  };
+  const before=await getLines();
+  await open();
+  await page.locator('.menu').getByRole('button',{name:'在单元格内换行',exact:true}).click();
+  const withBreak=await getLines();
+  a.equal(withBreak[4],'  | 甲<br> |  | 乙 |');
+  a.deepEqual(withBreak.slice(0,4),before.slice(0,4));
+  a.equal(withBreak.length,before.length);
+  await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{readText:async()=> '新\t次'}}));
+  await open();
+  await page.locator('.menu').getByRole('button',{name:'粘贴',exact:true}).click();
+  await page.waitForFunction(()=>editor.getValue().includes('  | 新 | 次 | 乙 |'));
+  a.equal((await getLines())[3],before[3]);
  });
  await page.evaluate(()=>{document.getElementById('scratch-host').remove();p.tableSourceInfo=beforeScratchMapping;editor.cm.dispatch({changes:{from:0,to:editor.cm.state.doc.length,insert:beforeScratchSource}});p.clearMergeSelection();p._toolbarAnchor=null;p.scanEdit();p.activateCell(document.getElementById('existing'),document.getElementById('existing').rows[1].cells[0]);});
  await page.evaluate(()=>{document.querySelector('.workspace-leaf-content').style.width='';document.getElementById('existing').parentElement.scrollTop=0;document.getElementById('existing').parentElement.scrollLeft=0;Object.defineProperty(window,'visualViewport',{configurable:true,value:{width:1000,height:1100,offsetTop:0,offsetLeft:0,addEventListener(){},removeEventListener(){}}});p._ttViewport();});

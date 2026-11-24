@@ -1,4 +1,4 @@
-const { Plugin, MarkdownView, Notice, setIcon } = require('obsidian');
+const { Plugin, MarkdownView, Menu, Notice, setIcon } = require('obsidian');
 const MERGE_CONTENT_OPTIONS = [
   ['保留全部内容', 'all'],
   ['仅保留左上格内容', 'top-left'],
@@ -86,6 +86,10 @@ module.exports = class TableColumnResize extends Plugin {
     document.addEventListener('pointerdown', this._docPointer, true);
     this._onKey = (e) => { if (!this.handleSelectedCellKey(e) && !this.handleTableHistoryKey(e) && !this.handleCellEnter(e)) this.handleCellSelectAll(e); };
     document.addEventListener('keydown', this._onKey, true);
+    this._onCellBeforeInput = e => {
+      if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') this.handleCellLineBreakInput(e);
+    };
+    document.addEventListener('beforeinput', this._onCellBeforeInput, true);
     this.installSelectedCellCommands();
     this.registerEvent(this.app.workspace.on('editor-menu', (menu) => this.populateEditorMenu(menu)));
 
@@ -109,6 +113,8 @@ module.exports = class TableColumnResize extends Plugin {
   }
 
   onunload() {
+    this._tableContextMenu?.hide();
+    document.removeEventListener('beforeinput', this._onCellBeforeInput, true);
     if(this._cellDragCleanup)this._cellDragCleanup();
     this.uninstallSelectedCellCommands();
     if(this._historyOriginals)for(const [name,method] of this._historyOriginals)this[name]=method;
@@ -2099,7 +2105,7 @@ module.exports = class TableColumnResize extends Plugin {
     const uid=info.uid || ('m'+Date.now().toString(36)+Math.random().toString(36).slice(2,8)),tid='u'+uid;
     grid[0][0]=this.encodeInvisibleUid(uid)+grid[0][0];
     const sep=this.splitRow(info.sep);while(sep.length<cols)sep.push('---');
-    const text=[this.buildRow(grid[0]),this.buildRow(sep),...grid.slice(1).map(row=>this.buildRow(row))].join('\n');
+    const text=this.buildTableSource(info.header,grid,sep);
     try{this.replaceTableRange(editor,text,info.toPos(info.from),info.toPos(info.to));}
     catch(error){new Notice('TableTune: 表格粘贴失败');return true;}
     for(const store of [this.widths,this.rowHeights,this.alignments,this.cellStyles,this.tableOptions])if(store?.[path]?.[oldTid]!==undefined){store[path][tid]=JSON.parse(JSON.stringify(store[path][oldTid]));}
@@ -2307,10 +2313,12 @@ module.exports = class TableColumnResize extends Plugin {
       else {
         const pos = this.logicalPointInCell(table, cell, e.clientX, e.clientY, path, tid);
         const sel = this._sel;
-        if (!sel || sel.table !== table || pos.r < sel.r1 || pos.r > sel.r2 || pos.c < sel.c1 || pos.c > sel.c2)
+        const inside = sel?.table===table && (sel.axis ? sel.indices.has(sel.axis==='row' ? pos.r : pos.c) :
+          this.selectionCells(sel).has(pos.r+','+pos.c));
+        if (!inside)
           this.selectRect(table, pos.r, pos.c, pos.r, pos.c, path, tid);
       }
-      this.refreshMergeToolbar();
+      this.showTableContextMenu(e,handle ? null : cell);
     };
     table.addEventListener('pointerdown', axisDown, true);
     table.addEventListener('pointerdown', cellDown, true);
@@ -2402,7 +2410,7 @@ module.exports = class TableColumnResize extends Plugin {
         if (!h) return;
         e.preventDefault(); e.stopImmediatePropagation();
         this.selectTableAxis(table, h, e, true);
-        this.refreshMergeToolbar();
+        this.showTableContextMenu(e,null);
       });
       host.appendChild(rail); table._tcrAxisRails.push(rail); this._axisRails.push(rail);
     }
@@ -2905,15 +2913,41 @@ module.exports = class TableColumnResize extends Plugin {
     this._toolbar.style.top = Math.max(4,Math.min(top>=4?top:tableRect.bottom+14,window.innerHeight-toolbarHeight-4))+'px';
   }
 
-  // ---- native right-click menu (injected into Obsidian's editor menu) ---
+  showTableContextMenu(event, cell) {
+    const sel=this._sel;
+    if(!sel || !sel.table.isConnected || sel.path!==this.currentPath())return;
+    this._tableContextMenu?.hide();
+    this.hideMergeToolbar();
+    const menu=new Menu();
+    this._tableContextMenu=menu;
+    menu.onHide(()=>{
+      if(this._tableContextMenu===menu)this._tableContextMenu=null;
+    });
+    this.populateTableContextMenu(menu,cell,sel);
+    menu.showAtPosition({x:event.clientX,y:event.clientY},sel.table.ownerDocument);
+  }
+
+  populateTableContextMenu(menu,cell,sel) {
+    if(cell && !sel.axis && (this.selectionCells(sel).size===1 || this.isMergeRegion(sel))){
+      menu.addItem(item=>item.setTitle('在单元格内换行').onClick(()=>{
+        if(this._sel===sel)this.insertContextLineBreak(cell,sel);
+      }));
+    }
+    this.populateEditorMenu(menu);
+  }
+
+  // ---- native right-click menu ----
   populateEditorMenu(menu) {
     const sel = this._sel;
-    if(sel)menu.addItem(item=>{item.setTitle('清空内容');item.onClick(()=>this.clearSelectedCellContents());});
+    if (sel && (!sel.table.isConnected || sel.path !== this.currentPath())) return;
+    if(sel)menu.addItem(item=>{item.setTitle('清空内容');item.onClick(()=>{if(this._sel===sel)this.clearSelectedCellContents();});});
     if (sel && sel.axis) {
       menu.addItem(item => {
         const count = sel.indices.size;
         item.setTitle(sel.axis === 'row' ? (count === 1 ? '删除行' : `删除 ${count} 行`) : (count === 1 ? '删除列' : `删除 ${count} 列`));
-        item.onClick(() => sel.axis === 'row' ? this.deleteSelectedRows() : this.deleteSelectedColumns());
+        item.onClick(() => {
+          if(this._sel===sel)sel.axis === 'row' ? this.deleteSelectedRows() : this.deleteSelectedColumns();
+        });
       });
       const row = sel.axis === 'row';
       for (const after of [false,true]) menu.addItem(item => {
@@ -2932,13 +2966,19 @@ module.exports = class TableColumnResize extends Plugin {
       }
     }
     if (sel) {
+      for(const [axis,at,title] of [
+        ['row',sel.r1,'在上方插入行'],['row',sel.r2+1,'在下方插入行'],
+        ['col',sel.c1,'在左侧插入列'],['col',sel.c2+1,'在右侧插入列'],
+      ]) menu.addItem(item=>item.setTitle(title).onClick(()=>{
+        if(this._sel===sel)this.insertTableAxis(sel.table,axis,at);
+      }));
       menu.addItem((item) => {
         item.setTitle(sel.r1 === sel.r2 ? '删除行' : `删除 ${sel.r2 - sel.r1 + 1} 行`);
-        item.onClick(() => this.deleteSelectedRows());
+        item.onClick(() => {if(this._sel===sel)this.deleteSelectedRows();});
       });
       menu.addItem((item) => {
         item.setTitle(sel.c1 === sel.c2 ? '删除列' : `删除 ${sel.c2 - sel.c1 + 1} 列`);
-        item.onClick(() => this.deleteSelectedColumns());
+        item.onClick(() => {if(this._sel===sel)this.deleteSelectedColumns();});
       });
     }
     let splitReg = null, path = null, tid = null;
@@ -2984,17 +3024,49 @@ module.exports = class TableColumnResize extends Plugin {
 
   handleCellEnter(e) {
     if (e.key !== 'Enter' || e.isComposing || e.keyCode === 229 || e.ctrlKey || e.metaKey || e.altKey) return false;
+    return this.handleCellLineBreakInput(e);
+  }
+
+  handleCellLineBreakInput(e) {
+    if (e.defaultPrevented || e.isComposing || e.cancelable===false) return false;
     const table = e.target.closest && e.target.closest('table[data-tcr]');
     if (!table || !e.target.closest('.table-cell-wrapper')) return false;
     const session = this.activeEditor()?.editorComponent?.tableCell;
     const cm = session && session.cm;
     if (!cm || session.table?.tableEl !== table || !cm.contentDOM.contains(e.target)) return false;
     e.preventDefault(); e.stopImmediatePropagation();
+    this.insertEditorLineBreak(session);
+    return true;
+  }
+
+  insertEditorLineBreak(session) {
     this.clearMergeSelection();
     if (typeof session.table.deselectCells === 'function') session.table.deselectCells();
-    cm.dispatch({...cm.state.replaceSelection('\n'), userEvent:'input.type'});
-    requestAnimationFrame(()=>{if (table.isConnected) {this.positionAxisRails(table);this.positionSelectionOverlay();}});
-    return true;
+    const {cm}=session;
+    // The native cell editor serializes this newline as <br> in the Markdown
+    // table. Scroll the inner editor to the new caret when the cell is full.
+    cm.dispatch({...cm.state.replaceSelection('\n'), scrollIntoView:true, userEvent:'input.type'});
+  }
+
+  insertContextLineBreak(cell,sel) {
+    const editor=this.activeEditor(),{table,path}=sel;
+    if(!editor || !cell.isConnected || path!==this.currentPath())return;
+    const session=editor.editorComponent?.tableCell;
+    if(session?.table?.tableEl===table && cell.contains(session.cm?.contentDOM)){
+      this.insertEditorLineBreak(session);
+      session.cm.focus();
+      return;
+    }
+    const info=this.tableSourceInfo(editor,table);
+    const r=this.cellRow(cell),c=this.cellCol(cell),row=info?.rowSources?.[r];
+    const range=row && this.rowCellRanges(row.text)[c];
+    if(!range || range.text!==info.grid[r]?.[c]){
+      new Notice('无法定位当前单元格，换行已取消');
+      return;
+    }
+    const offset=row.from+range.to;
+    this.clearMergeSelection();
+    this.dispatchTableChanges(editor,[{from:offset,to:offset,insert:'<br>'}],info.toPos);
   }
 
   // Ctrl+A inside a merged cell selects the whole merged cell (for split).

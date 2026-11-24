@@ -361,6 +361,23 @@ module.exports=class TabletTableTools extends Base{
   const toolbar=button.closest('.tcr-merge-toolbar')?.getBoundingClientRect();
   menu.showAtPosition({x:rect.left,y:(toolbar?.bottom??rect.bottom)+4});
  }
+ populateTableContextMenu(menu,cell,sel){
+  menu.addItem(item=>item.setTitle('复制内容').onClick(()=>{
+   if(this._sel===sel)void this.copyTable(true);
+  }));
+  menu.addItem(item=>item.setTitle('粘贴').onClick(()=>this.pasteTableText(sel)));
+  super.populateTableContextMenu(menu,cell,sel);
+ }
+ async pasteTableText(sel){
+  try{
+   const text=await navigator.clipboard.readText();
+   if(!text || this._sel!==sel || !sel.table.isConnected)return;
+   this.handleTablePaste({
+    target:sel.table,clipboardData:{getData:type=>type==='text/plain'?text:''},
+    preventDefault(){},stopImmediatePropagation(){}
+   });
+  }catch(e){new Notice('无法读取剪贴板，可用 Ctrl+V 或系统粘贴');}
+ }
  ensureToolbarSelection(){
   const sel=this.targetSelection();if(!sel)return null;
   if(!this._sel)this.selectRect(sel.table,sel.r1,sel.c1,sel.r2,sel.c2,sel.path,sel.tid);
